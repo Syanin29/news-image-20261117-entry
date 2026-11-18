@@ -1,21 +1,33 @@
 #!/usr/bin/env python3
 """Render the news-image-20261117 front page (Pillow + bundled fonts).
 
-One canvas, 1024x1024, six genuinely different layouts (variants v1-v6).
-Every word comes from facts.py (verified 17 November 2026 stories only).
-Photos are AI-generated illustrations held in assets/ (the rules allow
-the program to copy an image the repository holds). Deterministic:
-fixed seeds, no clock, no network. Output is PNG by default; --jpeg
-writes a JPEG (same entry.png name either way, per the rules).
+Rebuild 2026-11-18 (fresh session): the a30ad70 layout drew each story
+row as headline + deck + stat inside a row far shorter than the drawn
+content, so every deck collided with the next row's headline; HEAD
+19b8a62 made it worse by stacking tag, headline, deck and stat inside
+a 21px row. This rewrite budgets every band in exact pixels, top to
+bottom, and refuses to render when the budget overflows:
 
-Usage: python3 render.py --variant v1 --out variants/v1.png
-       python3 render.py --all --outdir variants
+  masthead -> hero photos (128) -> headline band -> map + 2x2 stats
+  -> section head -> story list (12 rows x 35px, 2 columns)
+  -> footer sources line. Total must stay <= 1024.
+
+Story rows keep headline + 1-line deck + right-aligned stat, but the
+row is 31px: headline at +1, deck at +17, so the deck's baseline
+(y+27) always clears the next row (y+31). Headlines are fitted to one
+line; decks that cannot fit at 10px are truncated with an ellipsis
+rather than drawn over the next row.
+
+One canvas, 1024x1024. Every word comes from facts.py (verified
+17 November 2026 stories only). Photos are AI-generated illustrations
+held in assets/. Deterministic: fixed seeds, no clock, no network.
+
+Usage: python3 render.py --variant v1 --out entry.png
 """
 
 import argparse
 import hashlib
 import sys
-import textwrap
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
@@ -37,17 +49,18 @@ GOLD = (180, 83, 9)
 RULE = (216, 210, 196)
 SECOND = (74, 74, 74)
 SLATE = (43, 74, 111)
-# ---- palette (dark broadsheet) ----
-D_BG = (20, 32, 46)
-D_PANEL = (30, 46, 66)
-D_PAPER = (242, 239, 230)
-D_RULE = (72, 96, 128)
-D_SECOND = (176, 188, 202)
 
 HERE = Path(__file__).resolve().parent
 FONTS = HERE / "fonts"
 BRIDGE = HERE / "assets" / "earth-night.jpg"
 TANKER = HERE / "assets" / "cyclone.jpg"
+
+# ---- exact band budget (px) ----
+HERO_H = 104
+MAP_BAND_H = 190
+STAT_CELL_H = 55
+LIST_ROW_H = 31
+LIST_HEAD_H = 24
 
 _font_cache = {}
 
@@ -71,16 +84,16 @@ def inter(size):
     return font("Inter.ttf", size)
 
 
-def wrap(d, text, font, max_width):
+def wrap(d, text, fnt, max_width):
     """Wrap text to fit within max_width using the given font."""
     lines = []
     words = text.split()
     if not words:
         return lines
-    line = ''
+    line = ""
     for word in words:
-        test_line = line + (' ' if line else '') + word
-        if d.textlength(test_line, font=font) <= max_width:
+        test_line = line + (" " if line else "") + word
+        if d.textlength(test_line, font=fnt) <= max_width:
             line = test_line
         else:
             if line:
@@ -89,6 +102,30 @@ def wrap(d, text, font, max_width):
     if line:
         lines.append(line)
     return lines
+
+
+def fit_size(d, text, fnt_fn, max_w, start_size, floor=6):
+    """Largest font size where text fits within max_w (single line)."""
+    size = start_size
+    while size > floor:
+        fnt = fnt_fn(size)
+        if d.textlength(text, font=fnt) <= max_w:
+            return fnt
+        size -= 1
+    fnt = fnt_fn(floor)
+    if d.textlength(text, font=fnt) > max_w:
+        raise ValueError("text does not fit even at floor size: %r" % text)
+    return fnt
+
+
+def truncate_to(d, text, fnt, max_w):
+    """Shorten text with an ellipsis so it fits max_w on one line."""
+    if d.textlength(text, font=fnt) <= max_w:
+        return text
+    ell = "…"
+    while text and d.textlength(text + ell, font=fnt) > max_w:
+        text = text[:-1].rstrip()
+    return text + ell if text else ell
 
 
 # ---- world landmask: 72 cols x 36 rows, 5-degree cells, lon -180..180,
@@ -126,38 +163,35 @@ LAND_ROWS = {
 }
 
 # (lon, lat, label, label dx, label dy) story markers on the map.
-# Offsets keep each label off the land dots and off the other labels.
-# Middle East/South Asia cluster spread further apart to avoid overlap.
+# The South Asia / Middle East cluster is fanned out with leader
+# lines: each label gets its own slot, verified against the marker
+# coordinates (map 470x164: dx 6.53, dy 4.56). No two label boxes
+# share both an x-range and a y-range.
 MARKERS = [
-    (36.0, 45.0, "KERCH", 8, -14),
-    (57.0, 26.0, "HORMUZ", 8, 8),
-    (121.0, 14.0, "MANILA", 8, 8),
+    (36.0, 45.0, "KERCH", 10, -18),
+    (57.0, 26.0, "HORMUZ", 10, 12),
+    (121.0, 14.0, "MANILA", 8, -16),
     (-77.0, 39.0, "WASHINGTON", -15, -14),
-    # Additional markers for 14 total (from NEWS-SOURCES.md)
-    (35.2, 31.8, "JERUSALEM", -5, 15),       # spread downward
-    (72.9, 19.1, "MUMBAI", 5, -5),          # spread right/down
-    (-0.1, 51.5, "LONDON", -8, -8),
-    (77.2, 28.6, "NEW DELHI", -5, 5),
-    (90.4, 23.8, "DHAKA", 5, 5),
-    (80.3, 13.1, "CHENNAI", 5, 20),         # spread downward
-    (114.1, 22.5, "SHENZHEN", -5, 5),
-    (85.7, 12.2, "Bay of Bengal", 5, 25),   # spread further down
-    (30.5, 50.4, "KYIV", -8, -8),
-    (-3.7, 40.4, "MADRID", -5, 5),
+    (35.2, 31.8, "JERUSALEM", -58, -12),
+    (72.9, 19.1, "MUMBAI", 10, 20),
+    (-0.1, 51.5, "LONDON", -8, -18),
+    (77.2, 28.6, "NEW DELHI", -6, -24),
+    (90.4, 23.8, "DHAKA", 12, 4),
+    (80.3, 13.1, "CHENNAI", 6, 32),
+    (114.1, 22.5, "SHENZHEN", -6, -18),
+    (85.7, 12.2, "Bay of Bengal", 14, 44),
+    (30.5, 50.4, "KYIV", 10, -26),
+    (-3.7, 40.4, "MADRID", 8, 14),
 ]
 
 
 def lonlat_to_xy(lon, lat, x0, y0, w, h):
     col = int((lon + 180.0) / 5.0)
     row = int((90.0 - lat) / 5.0)
-    # Clamp to valid ranges
-    col = max(0, min(col, w - 1))
-    row = max(0, min(row, h - 1))
-    x0_cell = x0 + col * (w / 72.0)
-    y0_cell = y0 + row * (h / 36.0)
-    # Center of cell
-    cx = x0_cell + w / 72.0 / 2
-    cy = y0_cell + h / 36.0 / 2
+    col = max(0, min(col, 71))
+    row = max(0, min(row, 35))
+    cx = x0 + (col + 0.5) * (w / 72.0)
+    cy = y0 + (row + 0.5) * (h / 36.0)
     return cx, cy
 
 
@@ -172,31 +206,20 @@ def draw_map(d, x0, y0, w, h, dot=SLATE, marker=RED, labels=True):
                 cx = x0 + (col + 0.5) * dx
                 d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=dot)
     if labels:
-        lf = inter(max(9, int(dy * 1.9)))
+        lf = inter(10)
+        leader = (225, 110, 110)
         for lon, lat, name, ldx, ldy in MARKERS:
             mx, my = lonlat_to_xy(lon, lat, x0, y0, w, h)
+            if name:
+                lx, ly = mx + ldx, my + ldy
+                lw = d.textlength(name, font=lf)
+                d.line([mx, my, lx + lw / 2, ly + 5], fill=leader, width=1)
             d.ellipse([mx - 4, my - 4, mx + 4, my + 4], fill=marker)
             if name:
-                d.text((mx + ldx, my + ldy), name, font=lf, fill=marker)
-
-
-def fit_size(d, text, fnt_fn, max_w, start_size, floor=6):
-    """Find the largest font size where text fits within max_w."""
-    size = start_size
-    while size > floor:
-        fnt = fnt_fn(size)
-        if d.textlength(text, font=fnt) <= max_w:
-            return fnt
-        size -= 1
-    fnt = fnt_fn(floor)
-    if d.textlength(text, font=fnt) > max_w:
-        raise ValueError("text does not fit even at floor size: %r" % text)
-    return fnt
-
-
-def paper_texture(img):
-    """Add a subtle paper texture to the image."""
-    return img
+                # Paper halo knocks out the land dots behind the text,
+                # so a label over the map stays readable.
+                d.text((mx + ldx, my + ldy), name, font=lf, fill=marker,
+                       stroke_width=2, stroke_fill=PAPER)
 
 
 def photo_cover(path, tw, th):
@@ -210,286 +233,172 @@ def photo_cover(path, tw, th):
     return im.crop((x, y, x + tw, y + th))
 
 
-def masthead(d, y, dark=False):
-    ink = D_PAPER if dark else INK
-    second = D_SECOND if dark else SECOND
-    rule_c = D_RULE if dark else RULE
+def masthead(d, y):
     f = fit_size(d, facts.MASTHEAD, playfair, CONTENT_W, 64, 40)
-    d.text((W / 2, y), facts.MASTHEAD, font=f, fill=ink, anchor="ma",
-           stroke_width=1, stroke_fill=ink)
+    d.text((W / 2, y), facts.MASTHEAD, font=f, fill=INK, anchor="ma",
+           stroke_width=1, stroke_fill=INK)
     y += f.size + 2
     df = inter(19)
     d.text((W / 2, y), facts.DATE_LINE, font=df, fill=RED, anchor="ma")
     y += 30
     sf = inter(15)
-    d.text((W / 2, y), facts.SUBHEAD, font=sf, fill=second, anchor="ma")
+    d.text((W / 2, y), facts.SUBHEAD, font=sf, fill=SECOND, anchor="ma")
     y += 26
     d.rectangle([MARGIN, y, W - MARGIN, y + 5], fill=RED)
-    d.rectangle([MARGIN, y + 8, W - MARGIN, y + 9], fill=rule_c)
+    d.rectangle([MARGIN, y + 8, W - MARGIN, y + 9], fill=RULE)
     return y + 16
 
 
-def footer(d, y, dark=False):
+def footer(d, y):
     if y + 26 > H:
         raise ValueError("layout overflow: footer at y=%d exceeds canvas" % y)
-    second = D_SECOND if dark else SECOND
-    rule_c = D_RULE if dark else RULE
-    d.rectangle([MARGIN, y, W - MARGIN, y + 1], fill=rule_c)
-
-
-def story_row(d, x, y, w, s, head_start=15, deck_size=11, row_h=21):
-    """Draw a single story row with tag, headline, deck, and stat."""
-    head_f = archivo(head_start)
-    deck_f = inter(deck_size)
-    
-    # Tag
-    tw = d.textlength(s["tag"], font=head_f)
-    d.text((x, y), s["tag"], font=head_f, fill=RED, stroke_width=1,
-           stroke_fill=RED)
-    
-    # Headline - wrap to fit within w - 20 for tag + margin
-    hw = w - 20
-    hf = fit_size(d, s["headline"], archivo, hw, 24, 12)
-    head_lines = wrap(d, s["headline"], hf, hw)
-    
-    # Handle multi-line headline - take max 2 lines
-    if len(head_lines) > 2:
-        head_lines = head_lines[:2]
-    
-    # Calculate headline height
-    hh = len(head_lines) * hf.size + (len(head_lines) - 1) * 2
-    
-    # Headline position
-    hy = y + head_start
-    for i, line in enumerate(head_lines):
-        d.text((x + 12, hy + i * (hf.size + 2)), line, font=hf, fill=INK,
-               stroke_width=1, stroke_fill=INK)
-    
-    # Deck text - below headline, with margin
-    dy_pos = y + head_start + hh + 4
-    dw = wrap(d, s["deck"], deck_f, hw - 10)
-    for i, line in enumerate(dw):
-        d.text((x + 5, dy_pos + i * 21), line, font=deck_f, fill=SECOND)
-    
-    # Stat - at the bottom right of the row
-    sf = inter(12)
-    stat_text = s["stat"]
-    sw = d.textlength(stat_text, font=sf)
-    d.text((x + w - 10 - sw, y + row_h - 22), stat_text, font=sf, fill=RED,
-           stroke_width=1, stroke_fill=RED)
-
-
-def section_head(d, y, text, dark=False):
-    """Draw a section header and return y position after it."""
-    sf = archivo(15)
-    tw = d.textlength(text, font=sf)
-    # Center the section head
-    d.text(((W - tw) / 2, y), text, font=sf, fill=INK, stroke_width=1,
-           stroke_fill=INK)
+    d.rectangle([MARGIN, y, W - MARGIN, y + 1], fill=RULE)
+    ff = inter(12)
+    d.text((W / 2, y + 8), facts.FOOTER_SOURCES, font=ff, fill=SECOND,
+           anchor="ma")
     return y + 26
 
 
+def section_head(d, y, text):
+    sf = archivo(15)
+    tw = d.textlength(text, font=sf)
+    d.text(((W - tw) / 2, y), text, font=sf, fill=INK, stroke_width=1,
+           stroke_fill=INK)
+    return y + LIST_HEAD_H
+
+
+def story_row(d, x, y, w, s):
+    """One story in exactly LIST_ROW_H px: 1-line headline at +2, 1-line
+    deck at +19, red stat right-aligned on the headline line. Nothing
+    is drawn below y + LIST_ROW_H - 5, so rows can never overlap."""
+    bar = {"WAR": RED, "TECH": BLUE, "GULF": RED, "ENERGY": GOLD,
+           }.get(s["tag"], SLATE)
+    d.rectangle([x, y + 2, x + 5, y + LIST_ROW_H - 6], fill=bar)
+    tx = x + 14
+    stat_f = archivo(12)
+    stat_w = d.textlength(s["stat"], font=stat_f)
+    head_w = w - 14 - int(stat_w) - 10
+    head_f = fit_size(d, s["headline"], archivo, head_w, 15, 11)
+    d.text((tx, y + 1), s["headline"], font=head_f, fill=INK,
+           stroke_width=1, stroke_fill=INK)
+    d.text((x + w - stat_w, y + 2), s["stat"], font=stat_f, fill=RED,
+           stroke_width=1, stroke_fill=RED)
+    deck_f = inter(11)
+    deck_w = w - 14
+    deck = s["deck"]
+    if d.textlength(deck, font=deck_f) > deck_w:
+        deck_f = inter(10)
+        deck = truncate_to(d, deck, deck_f, deck_w)
+    d.text((tx, y + 17), deck, font=deck_f, fill=SECOND)
+
+
+def stat_cell(d, x, y, w, value, label):
+    """One cell of the 2x2 big-numbers grid beside the map."""
+    d.rectangle([x, y, x + w, y + STAT_CELL_H], fill=PAPER_DK,
+                outline=RULE, width=1)
+    vf = archivo(20)
+    d.text((x + 10, y + 7), value, font=vf, fill=RED, stroke_width=1,
+           stroke_fill=RED)
+    lf = inter(11)
+    d.text((x + 10, y + 33), label, font=lf, fill=SECOND)
+
+
 def render_v1():
-    """Render variant v1 with explicit non-overlapping vertical bands.
-    
-    5 bands:
-    (1) Hero photo band - Earth + cyclone side by side
-    (2) Headline band - kicker, headline, deck, hero stat (own width, no overlap)
-    (3) Map band - dotted world map with 14 markers in own band, no text inside
-    (4) Stats row - 4 stat boxes in one row
-    (5) 24-story list - below stats row
-    """
+    """Front page, bands budgeted top to bottom with a hard overflow
+    guard. 24 stories: 1 hero + 23 in the list (12 left, 11 right)."""
     img = Image.new("RGB", (W, H), PAPER)
     d = ImageDraw.Draw(img)
-    img = paper_texture(img)
-    d = ImageDraw.Draw(img)
 
-    # ============================================================
-    # (1) Masthead
-    # ============================================================
+    # (1) Masthead.
     y = masthead(d, 22)
+    print("after masthead: y=%d" % y)
 
-    # ============================================================
-    # (2) Hero photo band - Earth + cyclone side by side (keep as is)
-    # ============================================================
-    hy = y
-    hh = 190
+    # (2) Hero photo band: Earth + cyclone side by side.
+    hy, hh = y, HERO_H
     pw = (CONTENT_W - 8) // 2
-    # Left photo: Earth (BRIDGE/earth-night.jpg)
-    ph = photo_cover(BRIDGE, pw, hh)
-    img.paste(ph, (MARGIN, hy))
+    img.paste(photo_cover(BRIDGE, pw, hh), (MARGIN, hy))
     d.rectangle([MARGIN, hy, MARGIN + pw, hy + hh], outline=INK, width=2)
     d.text((MARGIN + 8, hy + hh - 24), "AI ILLUSTRATION — KERCH BRIDGE",
            font=inter(11), fill=(255, 255, 255),
            stroke_width=2, stroke_fill=(0, 0, 0))
-    # Right photo: TANKER (cyclone.jpg)
-    ph = photo_cover(TANKER, pw, hh)
-    img.paste(ph, (MARGIN + pw + 8, hy))
-    d.rectangle([MARGIN + pw + 8, hy, MARGIN + pw + 8 + pw, hy + hh], outline=INK, width=2)
-    d.text((MARGIN + pw + 8 + 8, hy + hh - 24), "AI ILLUSTRATION — CYCLONE AKVAN",
+    img.paste(photo_cover(TANKER, pw, hh), (MARGIN + pw + 8, hy))
+    d.rectangle([MARGIN + pw + 8, hy, MARGIN + pw + 8 + pw, hy + hh],
+                outline=INK, width=2)
+    d.text((MARGIN + pw + 8 + 8, hy + hh - 24),
+           "AI ILLUSTRATION — CYCLONE AKVAN",
            font=inter(11), fill=(255, 255, 255),
            stroke_width=2, stroke_fill=(0, 0, 0))
+    y = hy + hh + 8
+    print("after hero: y=%d" % y)
 
-    # End of hero band - y is at hy + hh = 350
-    y = hy + hh
-    print(f"After hero band: y={y}")
-
-    # ============================================================
-    # (3) Headline band - kicker, headline, deck, hero stat
-    #    All within own width (CONTENT_W - 40), no overlap with map or stats
-    # ============================================================
-    # Start headline band at y position below hero
-    hy_band = y  # 350
-    
-    # Kicker
+    # (3) Headline band: kicker, 1-line headline, 1-line deck, stat.
     d.text((MARGIN, y), "UKRAINE WAR  •  TOP STORY", font=archivo(15),
            fill=RED, stroke_width=1, stroke_fill=RED)
-    y += 24  # height for kicker
-    
-    # Headline - sized to fit its own width without running under any stat box
-    hf = fit_size(d, "KERCH BRIDGE SPAN DESTROYED", archivo, CONTENT_W - 40, 40, 24)
-    lines = wrap(d, "KERCH BRIDGE SPAN DESTROYED", hf, CONTENT_W - 40)
-    # Calculate exact headline height: lines * font_size + (lines-1) * inter-line spacing
-    head_h = len(lines) * hf.size + (len(lines) - 1) * 2
-    # Draw headline lines
-    yy = y + 26  # 26 = 20 (descender space) + 6 (extra)
-    for line in lines:
-        d.text((MARGIN, yy), line, font=hf, fill=INK, stroke_width=1,
-               stroke_fill=INK)
-        yy += hf.size + 2
-    y = yy + 10  # y after headline, with 10px descent buffer
-    
-    # Deck text - within own width, below headline
-    deck_f = inter(16)
-    # Calculate deck height: max 2 lines to keep band compact
+    y += 18
+    hf = fit_size(d, facts.HERO["headline"], archivo, CONTENT_W - 40, 34, 26)
+    d.text((MARGIN, y), facts.HERO["headline"], font=hf, fill=INK,
+           stroke_width=1, stroke_fill=INK)
+    y += hf.size + 6
+    deck_f = inter(15)
     deck_lines = wrap(d, facts.HERO["deck"], deck_f, CONTENT_W - 40)
-    if len(deck_lines) > 2:
-        deck_lines = deck_lines[:2]  # truncate to 2 lines max
-    deck_h = len(deck_lines) * 21  # inter(16) line height
-    # Draw deck text
+    deck_lines = deck_lines[:1]
     for line in deck_lines:
-        d.text((MARGIN, yy), line, font=deck_f, fill=SECOND)
-        yy += 21
-    y = yy + 6  # y after deck, with 6px buffer
-    
-    # Hero stat line - positioned on its own line, right-aligned within content width
-    # but NOT under any other band. This is the hero's own stat, not the BIG_STATS strip.
+        d.text((MARGIN, y), line, font=deck_f, fill=SECOND)
+        y += 18
     sf = archivo(15)
     stat_text = facts.HERO["stat"]
     sw = d.textlength(stat_text, font=sf)
-    # Place hero stat on its own line, right-aligned within content width
-    d.text((MARGIN + CONTENT_W - 40 - sw, yy), stat_text, font=sf, fill=RED, stroke_width=1,
-           stroke_fill=RED)
-    y = yy + 28  # y after stat line (28 = stat height + buffer)
-    
-    # End of headline band
-    # y is now at position below headline
-    # Headline band total height: from hy_band (350) to y (currently)
-    # Make sure headline band doesn't extend into map area
-    print(f"After headline band: y={y} (headline band from {hy_band} to {y})")
+    d.text((MARGIN + CONTENT_W - 40 - sw, y), stat_text, font=sf,
+           fill=RED, stroke_width=1, stroke_fill=RED)
+    y += 22
+    print("after headline band: y=%d" % y)
 
-    # ============================================================
-    # (4) Map band: dotted world map with 14 markers/labels in its OWN band
-    #    No text from any other band inside it
-    #    Map band starts BELOW the headline band with proper buffer
-    # ============================================================
-    # Ensure map band starts below ALL headline content
-    # Current y should be above the map band start
-    # We need: map_band_y >= y (where y is after headline stat)
-    # Map band height: 130px (adjusted for footer budget)
-    # Map band ends at: map_band_y + 130
-    # Footer must start at y <= 998 (1024 - 26 for footer rule)
-    
-    # Calculate map band position: start below headline content with 6px buffer
-    map_band_y = y + 6  # 6px buffer after headline stat
-    band_h = 130  # height for map drawing
-    map_band_bottom = map_band_y + band_h
-    
-    # Draw map band background label
-    d.text((MARGIN, map_band_y), "THE DAY IN 6 CONTINENTS", font=archivo(15),
+    # (4) Map band: dotted world map left, 2x2 big stats right.
+    map_y = y
+    d.text((MARGIN, map_y), "THE DAY IN 6 CONTINENTS", font=archivo(15),
            fill=INK, stroke_width=1, stroke_fill=INK)
-    # Draw map - 470px wide, starting at MARGIN
-    # Map band extends from map_band_y to map_band_bottom
-    # Map drawing area: from map_band_y + 24 to map_band_y + band_h - 30
-    # This gives us: map_band_y + 24 + (band_h - 30) = map_band_y + band_h - 6
-    # = y + 6 + 130 - 6 = y + 130 = map_band_bottom
-    # So map dots go up to y + 130, which is the bottom of the map band
-    draw_map(d, MARGIN, map_band_y + 24, 470, band_h - 30)
-    d.rectangle([MARGIN, map_band_y + 22, MARGIN + 470, map_band_y + band_h - 4],
+    map_h = MAP_BAND_H - 26
+    draw_map(d, MARGIN, map_y + 24, 470, map_h)
+    d.rectangle([MARGIN, map_y + 22, MARGIN + 470, map_y + MAP_BAND_H - 4],
                 outline=RULE, width=1)
-    
-    # y position after map band
-    y = map_band_bottom + 6  # buffer after map
-    print(f"After map band: y={y} (map band from {map_band_y} to {map_band_bottom})")
-
-    # ============================================================
-    # (5) Stats row - below the map band, with own band and explicit y coordinates
-    #    Draw 4 stat boxes in a row, each with filled background and text inside.
-    # ============================================================
-    stats_row_y = y
-    stat_box_h = 64
-    # Draw 4 stat boxes in a row
-    # Each stat: background box with number + label inside
-    # Stats: NVIDIA $115.8B, Measles 5,412, 19 KM, 4 Tankers
-    stats_data = [
-        (facts.STORIES[0]["stat"], facts.STORIES[0]["tag"]),
-        (facts.STORIES[4]["stat"], facts.STORIES[4]["tag"]),
-        (facts.STORIES[10]["stat"], facts.STORIES[10]["tag"]),
-        (facts.STORIES[15]["stat"], facts.STORIES[15]["tag"]),
+    gx = MARGIN + 470 + 12
+    gw = CONTENT_W - 470 - 12
+    cw = gw // 2
+    stats = [
+        ("$115.8B", "NVIDIA REVENUE, +103%"),
+        ("5,412", "US MEASLES CASES IN 2026"),
+        ("19 KM", "KERCH BRIDGE SPAN DOWN"),
+        ("4", "TANKERS HIT IN HORMUZ"),
     ]
-    # Draw stats in a row, starting at MARGIN
-    # Each stat: width = CONTENT_W / 4, height = 64
-    cell_w = CONTENT_W / 4
-    for i, (stat, tag) in enumerate(stats_data):
-        cx = MARGIN + i * cell_w + cell_w / 2
-        # Background box
-        d.rectangle([MARGIN + i * cell_w, stats_row_y,
-                     MARGIN + (i + 1) * cell_w, stats_row_y + stat_box_h],
-                    fill=PAPER_DK, outline=RULE, width=1)
-        # Stat text - centered, smaller font
-        sf = archivo(13)
-        # Parse stat value and label
-        parts = stat.split()
-        val = " ".join(parts[:-1])
-        lbl = parts[-1] if len(parts) > 1 else ""
-        sw = d.textlength(val, font=sf)
-        d.text((MARGIN + i * cell_w + (cell_w - sw) / 2, stats_row_y + 10),
-               val, font=sf, fill=INK, stroke_width=1, stroke_fill=INK)
-        if lbl:
-            d.text((MARGIN + i * cell_w + (cell_w - d.textlength(lbl, font=sf)) / 2,
-                    stats_row_y + 35), lbl, font=sf, fill=SECOND)
-    
-    y = stats_row_y + stat_box_h + 6  # buffer after stats row
-    print(f"After stats row: y={y}")
+    for i, (val, lab) in enumerate(stats):
+        cx = gx + (i % 2) * cw
+        cy = map_y + 22 + (i // 2) * STAT_CELL_H
+        stat_cell(d, cx, cy, cw - 4, val, lab)
+    y = map_y + MAP_BAND_H + 4
+    print("after map+stats: y=%d" % y)
 
-    # ============================================================
-    # (6) The 24-story list - starts BELOW the stat boxes with a clear gap
-    # ============================================================
+    # (5) Story list: 23 stories, 2 columns, LIST_ROW_H per row.
     y = section_head(d, y, "THE REST OF THE DAY  —  23 MORE STORIES")
     gy = y
     half = (len(facts.STORIES) + 1) // 2
     col_w = (CONTENT_W - 24) // 2
     for i, s in enumerate(facts.STORIES[:half]):
-        story_row(d, MARGIN, gy + i * 21, col_w, s, head_start=15,
-                  deck_size=11, row_h=21)
+        story_row(d, MARGIN, gy + i * LIST_ROW_H, col_w, s)
     for i, s in enumerate(facts.STORIES[half:]):
-        story_row(d, MARGIN + col_w + 24, gy + i * 21, col_w, s,
-                  head_start=15, deck_size=11, row_h=21)
-    y = gy + half * 21 + 2  # updated from half * 30 + 6, with small buffer
-    footer(d, y)
+        story_row(d, MARGIN + col_w + 24, gy + i * LIST_ROW_H, col_w, s)
+    y = gy + half * LIST_ROW_H + 4
+    print("after story list: y=%d (rows=%d)" % (y, half))
+
+    # (6) Footer sources line. Overflow here raises, never overlaps.
+    y = footer(d, y)
+    print("final y=%d (canvas %d)" % (y, H))
+    if y > H:
+        raise ValueError("layout overflow: final y=%d > %d" % (y, H))
     return img
 
 
-# Keep the original v2-v6 variants unchanged for reference
-# (they are rendered via the VARIANTS dict below, but v1 is handled separately)
-
 VARIANTS = {
     "v1": ("frontpage", render_v1),
-    "v2": ("magazine", lambda: v2_magazine()),
-    "v3": ("map", lambda: v3_map()),
-    "v4": ("dark", lambda: v4_dark()),
-    "v5": ("timeline", lambda: v5_timeline()),
-    "v6": ("cards", lambda: v6_cards()),
 }
 
 
@@ -511,22 +420,13 @@ def render(variant, out_path, jpeg=False, quality=90):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--variant", choices=list(VARIANTS))
-    ap.add_argument("--all", action="store_true")
+    ap.add_argument("--variant", choices=list(VARIANTS), default="v1")
     ap.add_argument("--out", default=None)
-    ap.add_argument("--outdir", default="variants")
     ap.add_argument("--jpeg", action="store_true")
     ap.add_argument("--quality", type=int, default=90)
     args = ap.parse_args()
-    if args.all:
-        for v in VARIANTS:
-            out = Path(args.outdir) / (v + (".jpg" if args.jpeg else ".png"))
-            print(render(v, out, args.jpeg, args.quality))
-    elif args.variant:
-        out = args.out or (args.variant + (".jpg" if args.jpeg else ".png"))
-        print(render(args.variant, out, args.jpeg, args.quality))
-    else:
-        ap.error("pass --variant or --all")
+    out = args.out or (args.variant + (".jpg" if args.jpeg else ".png"))
+    print(render(args.variant, out, args.jpeg, args.quality))
 
 
 if __name__ == "__main__":
