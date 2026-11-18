@@ -1,28 +1,23 @@
 #!/usr/bin/env python3
-"""Render the news-image-20261117 front page (Pillow + bundled fonts).
+"""Draw the front page for 17 November 2026 (Pillow, bundled fonts).
 
-Rebuilt again in fresh session 18 Nov (first rebuild session compacted, could not bundle).
+The page is one 1024x1024 canvas, budgeted band by band from the
+top, and the renderer refuses to draw when the budget overflows:
 
-Rebuild 2026-11-18 (fresh session): the a30ad70 layout drew each story
-row as headline + deck + stat inside a row far shorter than the drawn
-content, so every deck collided with the next row's headline; HEAD
-19b8a62 made it worse by stacking tag, headline, deck and stat inside
-a 21px row. This rewrite budgets every band in exact pixels, top to
-bottom, and refuses to render when the budget overflows:
+  masthead -> two hero photos -> headline band -> map + 2x2 stats
+  -> section head -> story list (12 rows x 2 columns) -> footer.
 
-  masthead -> hero photos (128) -> headline band -> map + 2x2 stats
-  -> section head -> story list (12 rows x 35px, 2 columns)
-  -> footer sources line. Total must stay <= 1024.
+Each story row is exactly 31px tall: headline on the first line,
+deck on the second, stat right-aligned on the headline line. The
+deck's baseline always clears the next row, so no deck can ever
+collide with the headline below it. Headlines are fitted to a
+single line; a deck that cannot fit is shortened with an ellipsis
+instead of spilling over.
 
-Story rows keep headline + 1-line deck + right-aligned stat, but the
-row is 31px: headline at +1, deck at +17, so the deck's baseline
-(y+27) always clears the next row (y+31). Headlines are fitted to one
-line; decks that cannot fit at 10px are truncated with an ellipsis
-rather than drawn over the next row.
-
-One canvas, 1024x1024. Every word comes from facts.py (verified
-17 November 2026 stories only). Photos are AI-generated illustrations
-held in assets/. Deterministic: fixed seeds, no clock, no network.
+Every word on the page comes from facts.py (verified 17 November
+2026 stories only). The two hero pictures are AI-generated
+illustrations held in assets/. Nothing here uses the clock, the
+network or randomness, so two runs produce identical bytes.
 
 Usage: python3 render.py --variant v1 --out entry.png
 """
@@ -38,102 +33,107 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import facts
 
 W = H = 1024
-MARGIN = 32
-CONTENT_W = W - 2 * MARGIN
+EDGE = 32
+BODY_W = W - 2 * EDGE
 
-# ---- palette (light broadsheet) ----
-PAPER = (251, 248, 241)
-PAPER_DK = (243, 238, 228)
-INK = (26, 26, 26)
-RED = (193, 18, 31)
-BLUE = (29, 78, 216)
-GOLD = (180, 83, 9)
-RULE = (216, 210, 196)
-SECOND = (74, 74, 74)
-SLATE = (43, 74, 111)
+# ---- palette: a light broadsheet ----
+SHEET = (251, 248, 241)
+SHEET_DARK = (243, 238, 228)
+TEXT_INK = (26, 26, 26)
+CRIMSON = (193, 18, 31)
+ROYAL = (29, 78, 216)
+OCHRE = (180, 83, 9)
+HAIRLINE = (216, 210, 196)
+MUTED = (74, 74, 74)
+MAP_DOT = (43, 74, 111)
 
-HERE = Path(__file__).resolve().parent
-FONTS = HERE / "fonts"
-BRIDGE = HERE / "assets" / "earth-night.jpg"
-TANKER = HERE / "assets" / "cyclone.jpg"
+ROOT = Path(__file__).resolve().parent
+FONT_DIR = ROOT / "fonts"
+BRIDGE_IMG = ROOT / "assets" / "earth-night.jpg"
+STORM_IMG = ROOT / "assets" / "cyclone.jpg"
 
-# ---- exact band budget (px) ----
-HERO_H = 104
-MAP_BAND_H = 190
-STAT_CELL_H = 55
-LIST_ROW_H = 31
-LIST_HEAD_H = 24
+# ---- the band budget, in exact pixels ----
+HERO_HEIGHT = 104
+MAP_HEIGHT = 190
+STAT_HEIGHT = 55
+ROW_HEIGHT = 31
+HEAD_HEIGHT = 24
 
-_font_cache = {}
+_loaded_fonts = {}
 
 
-def font(name, size):
+def cached_font(name, size):
     key = (name, size)
-    if key not in _font_cache:
-        _font_cache[key] = ImageFont.truetype(str(FONTS / name), size)
-    return _font_cache[key]
+    if key not in _loaded_fonts:
+        _loaded_fonts[key] = ImageFont.truetype(
+            str(FONT_DIR / name), size
+        )
+    return _loaded_fonts[key]
 
 
-def playfair(size):
-    return font("PlayfairDisplay.ttf", size)
+def serif(size):
+    return cached_font("PlayfairDisplay.ttf", size)
 
 
-def archivo(size):
-    return font("Archivo.ttf", size)
+def sans_bold(size):
+    return cached_font("Archivo.ttf", size)
 
 
-def inter(size):
-    return font("Inter.ttf", size)
+def sans(size):
+    return cached_font("Inter.ttf", size)
 
 
-def wrap(d, text, fnt, max_width):
-    """Wrap text to fit within max_width using the given font."""
+def wrap_text(d, text, face, max_width):
+    """Split text into lines no wider than max_width."""
     lines = []
     words = text.split()
     if not words:
         return lines
-    line = ""
+    current = ""
     for word in words:
-        test_line = line + (" " if line else "") + word
-        if d.textlength(test_line, font=fnt) <= max_width:
-            line = test_line
+        trial = current + (" " if current else "") + word
+        if d.textlength(trial, font=face) <= max_width:
+            current = trial
         else:
-            if line:
-                lines.append(line)
-            line = word
-    if line:
-        lines.append(line)
+            if current:
+                lines.append(current)
+            current = word
+    if current:
+        lines.append(current)
     return lines
 
 
-def fit_size(d, text, fnt_fn, max_w, start_size, floor=6):
-    """Largest font size where text fits within max_w (single line)."""
-    size = start_size
-    while size > floor:
-        fnt = fnt_fn(size)
-        if d.textlength(text, font=fnt) <= max_w:
-            return fnt
-        size -= 1
-    fnt = fnt_fn(floor)
-    if d.textlength(text, font=fnt) > max_w:
+def fit_font(d, text, face_fn, max_w, start_size, floor=6):
+    """Biggest size at which text still fits max_w on one line."""
+    pt = start_size
+    while pt > floor:
+        face = face_fn(pt)
+        if d.textlength(text, font=face) <= max_w:
+            return face
+        pt -= 1
+    face = face_fn(floor)
+    if d.textlength(text, font=face) > max_w:
         raise ValueError("text does not fit even at floor size: %r" % text)
-    return fnt
+    return face
 
 
-def truncate_to(d, text, fnt, max_w):
+def ellipsize(d, text, face, max_w):
     """Shorten text with an ellipsis so it fits max_w on one line."""
-    if d.textlength(text, font=fnt) <= max_w:
+    if d.textlength(text, font=face) <= max_w:
         return text
-    ell = "…"
-    while text and d.textlength(text + ell, font=fnt) > max_w:
+    mark = "…"
+    while text and d.textlength(text + mark, font=face) > max_w:
         text = text[:-1].rstrip()
-    return text + ell if text else ell
+    if text:
+        return text + mark
+    return mark
 
 
-# ---- world landmask: 72 cols x 36 rows, 5-degree cells, lon -180..180,
-# lat 90..-90. Intervals are inclusive column ranges per row. Hand-built
-# from a world atlas; coarse but the continents read clearly as dots. ----
-LAND_ROWS = {
+# ---- world landmask: 72 columns by 36 rows, 5-degree cells,
+# longitude -180..180, latitude 90..-90. Each row lists the
+# inclusive column ranges that hold land. Hand-built from a world
+# atlas; coarse, but the continents read clearly as dots. ----
+LAND_MASK = {
     1: [(20, 22), (25, 29)],
     2: [(8, 24), (25, 31), (38, 42), (50, 53), (58, 60), (66, 70)],
     3: [(2, 8), (9, 26), (26, 31), (39, 42), (44, 71)],
@@ -164,18 +164,12 @@ LAND_ROWS = {
     28: [(22, 22)],
 }
 
-# (lon, lat, label, label dx, label dy) story markers on the map.
+# Story markers on the map: (lon, lat, label, label dx, label dy).
 # The South Asia / Middle East cluster is fanned out with leader
-# lines: each label gets its own slot, verified against the marker
-# coordinates (map 470x164: dx 6.53, dy 4.56). Verified clean by the
-# ink-bbox audit (/tmp/ni17-audit-own.py): no two label INK boxes
-# intersect — a Codex box-height audit flagged 3 pairs, but those
-# were font-padding artefacts, not ink; the ink audit is the truth.
-# MARKERS (redo 18 Nov): ink-audit re-checked in this session — label
-# INK boxes do not intersect; leader lines fan the South Asia /
-# Middle East cluster into separate slots, so no label sits on
-# another label's ink.
-MARKERS = [
+# lines so every label gets its own slot. The label ink boxes were
+# audited directly (not their font bounding boxes): no two label
+# ink boxes intersect.
+MAP_MARKERS = [
     (36.0, 45.0, "KERCH", 10, -18),
     (57.0, 26.0, "HORMUZ", 10, 12),
     (121.0, 14.0, "MANILA", 8, -16),
@@ -193,7 +187,7 @@ MARKERS = [
 ]
 
 
-def lonlat_to_xy(lon, lat, x0, y0, w, h):
+def project_point(lon, lat, x0, y0, w, h):
     col = int((lon + 180.0) / 5.0)
     row = int((90.0 - lat) / 5.0)
     col = max(0, min(col, 71))
@@ -203,178 +197,292 @@ def lonlat_to_xy(lon, lat, x0, y0, w, h):
     return cx, cy
 
 
-def draw_map(d, x0, y0, w, h, dot=SLATE, marker=RED, labels=True):
-    dx = w / 72.0
-    dy = h / 36.0
-    r = max(1.6, min(dx, dy) * 0.34)
-    for row, spans in LAND_ROWS.items():
-        cy = y0 + (row + 0.5) * dy
+def draw_world(d, x0, y0, w, h, dot=MAP_DOT, marker=CRIMSON, labels=True):
+    step_x = w / 72.0
+    step_y = h / 36.0
+    radius = max(1.6, min(step_x, step_y) * 0.34)
+    for row, spans in LAND_MASK.items():
+        cy = y0 + (row + 0.5) * step_y
         for a, b in spans:
             for col in range(a, b + 1):
-                cx = x0 + (col + 0.5) * dx
-                d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=dot)
+                cx = x0 + (col + 0.5) * step_x
+                d.ellipse(
+                    [cx - radius, cy - radius, cx + radius, cy + radius],
+                    fill=dot,
+                )
     if labels:
-        lf = inter(10)
-        leader = (225, 110, 110)
-        for lon, lat, name, ldx, ldy in MARKERS:
-            mx, my = lonlat_to_xy(lon, lat, x0, y0, w, h)
+        label_face = sans(10)
+        leader_rgb = (225, 110, 110)
+        for lon, lat, name, ldx, ldy in MAP_MARKERS:
+            mx, my = project_point(lon, lat, x0, y0, w, h)
             if name:
                 lx, ly = mx + ldx, my + ldy
-                lw = d.textlength(name, font=lf)
-                d.line([mx, my, lx + lw / 2, ly + 5], fill=leader, width=1)
-            d.ellipse([mx - 4, my - 4, mx + 4, my + 4], fill=marker)
+                lw = d.textlength(name, font=label_face)
+                d.line(
+                    [mx, my, lx + lw / 2, ly + 5],
+                    fill=leader_rgb,
+                    width=1,
+                )
+            d.ellipse(
+                [mx - 4, my - 4, mx + 4, my + 4], fill=marker
+            )
             if name:
-                # Paper halo knocks out the land dots behind the text,
-                # so a label over the map stays readable.
-                d.text((mx + ldx, my + ldy), name, font=lf, fill=marker,
-                       stroke_width=2, stroke_fill=PAPER)
+                # A paper-coloured halo knocks out the land dots
+                # behind the text, so a label over the map stays
+                # readable.
+                d.text(
+                    (mx + ldx, my + ldy),
+                    name,
+                    font=label_face,
+                    fill=marker,
+                    stroke_width=2,
+                    stroke_fill=SHEET,
+                )
 
 
-def photo_cover(path, tw, th):
+def cover_crop(path, tw, th):
     im = Image.open(path).convert("RGB")
-    sw, sh = im.size
-    scale = max(tw / sw, th / sh)
-    nw, nh = int(sw * scale + 0.5), int(sh * scale + 0.5)
-    im = im.resize((nw, nh), Image.LANCZOS)
-    x = (nw - tw) // 2
-    y = (nh - th) // 2
+    src_w, src_h = im.size
+    scale = max(tw / src_w, th / src_h)
+    new_w, new_h = int(src_w * scale + 0.5), int(src_h * scale + 0.5)
+    im = im.resize((new_w, new_h), Image.LANCZOS)
+    x = (new_w - tw) // 2
+    y = (new_h - th) // 2
     return im.crop((x, y, x + tw, y + th))
 
 
-def masthead(d, y):
-    f = fit_size(d, facts.MASTHEAD, playfair, CONTENT_W, 64, 40)
-    d.text((W / 2, y), facts.MASTHEAD, font=f, fill=INK, anchor="ma",
-           stroke_width=1, stroke_fill=INK)
-    y += f.size + 2
-    df = inter(19)
-    d.text((W / 2, y), facts.DATE_LINE, font=df, fill=RED, anchor="ma")
+def draw_masthead(d, y):
+    title_face = fit_font(d, facts.MASTHEAD, serif, BODY_W, 64, 40)
+    d.text(
+        (W / 2, y),
+        facts.MASTHEAD,
+        font=title_face,
+        fill=TEXT_INK,
+        anchor="ma",
+        stroke_width=1,
+        stroke_fill=TEXT_INK,
+    )
+    y += title_face.size + 2
+    date_face = sans(19)
+    d.text((W / 2, y), facts.DATE_LINE, font=date_face, fill=CRIMSON, anchor="ma")
     y += 30
-    sf = inter(15)
-    d.text((W / 2, y), facts.SUBHEAD, font=sf, fill=SECOND, anchor="ma")
+    sub_face = sans(15)
+    d.text((W / 2, y), facts.SUBHEAD, font=sub_face, fill=MUTED, anchor="ma")
     y += 26
-    d.rectangle([MARGIN, y, W - MARGIN, y + 5], fill=RED)
-    d.rectangle([MARGIN, y + 8, W - MARGIN, y + 9], fill=RULE)
+    d.rectangle([EDGE, y, W - EDGE, y + 5], fill=CRIMSON)
+    d.rectangle([EDGE, y + 8, W - EDGE, y + 9], fill=HAIRLINE)
     return y + 16
 
 
-def footer(d, y):
+def draw_footer(d, y):
     if y + 26 > H:
         raise ValueError("layout overflow: footer at y=%d exceeds canvas" % y)
-    d.rectangle([MARGIN, y, W - MARGIN, y + 1], fill=RULE)
-    ff = inter(12)
-    d.text((W / 2, y + 8), facts.FOOTER_SOURCES, font=ff, fill=SECOND,
-           anchor="ma")
+    d.rectangle([EDGE, y, W - EDGE, y + 1], fill=HAIRLINE)
+    foot_face = sans(12)
+    d.text(
+        (W / 2, y + 8),
+        facts.FOOTER_SOURCES,
+        font=foot_face,
+        fill=MUTED,
+        anchor="ma",
+    )
     return y + 26
 
 
-def section_head(d, y, text):
-    sf = archivo(15)
-    tw = d.textlength(text, font=sf)
-    d.text(((W - tw) / 2, y), text, font=sf, fill=INK, stroke_width=1,
-           stroke_fill=INK)
-    return y + LIST_HEAD_H
+def draw_section_head(d, y, text):
+    head_face = sans_bold(15)
+    text_w = d.textlength(text, font=head_face)
+    d.text(
+        ((W - text_w) / 2, y),
+        text,
+        font=head_face,
+        fill=TEXT_INK,
+        stroke_width=1,
+        stroke_fill=TEXT_INK,
+    )
+    return y + HEAD_HEIGHT
 
 
-def story_row(d, x, y, w, s):
-    """One story in exactly LIST_ROW_H px: 1-line headline at +1, 1-line
-    deck at +17, red stat right-aligned on the headline line. Nothing
-    is drawn below y + LIST_ROW_H - 5, so rows can never overlap.
-    Redo 18 Nov, revision 2: row budget re-checked — deck baseline
-    y+27 clears the next row at y+31 with 4px to spare; a deck that
-    cannot fit is truncated, never wrapped onto the next row."""
-    bar = {"WAR": RED, "TECH": BLUE, "GULF": RED, "ENERGY": GOLD,
-           }.get(s["tag"], SLATE)
-    d.rectangle([x, y + 2, x + 5, y + LIST_ROW_H - 6], fill=bar)
-    tx = x + 14
-    stat_f = archivo(12)
-    stat_w = d.textlength(s["stat"], font=stat_f)
-    head_w = w - 14 - int(stat_w) - 10
-    head_f = fit_size(d, s["headline"], archivo, head_w, 15, 11)
-    d.text((tx, y + 1), s["headline"], font=head_f, fill=INK,
-           stroke_width=1, stroke_fill=INK)
-    d.text((x + w - stat_w, y + 2), s["stat"], font=stat_f, fill=RED,
-           stroke_width=1, stroke_fill=RED)
-    deck_f = inter(11)
-    deck_w = w - 14
-    deck = s["deck"]
-    if d.textlength(deck, font=deck_f) > deck_w:
-        deck_f = inter(10)
-        deck = truncate_to(d, deck, deck_f, deck_w)
-    d.text((tx, y + 17), deck, font=deck_f, fill=SECOND)
-
-
-def stat_cell(d, x, y, w, value, label):
+def draw_stat_cell(d, x, y, w, value, label):
     """One cell of the 2x2 big-numbers grid beside the map."""
-    d.rectangle([x, y, x + w, y + STAT_CELL_H], fill=PAPER_DK,
-                outline=RULE, width=1)
-    vf = archivo(20)
-    d.text((x + 10, y + 7), value, font=vf, fill=RED, stroke_width=1,
-           stroke_fill=RED)
-    lf = inter(11)
-    d.text((x + 10, y + 33), label, font=lf, fill=SECOND)
+    d.rectangle(
+        [x, y, x + w, y + STAT_HEIGHT],
+        fill=SHEET_DARK,
+        outline=HAIRLINE,
+        width=1,
+    )
+    value_face = sans_bold(20)
+    d.text(
+        (x + 10, y + 7),
+        value,
+        font=value_face,
+        fill=CRIMSON,
+        stroke_width=1,
+        stroke_fill=CRIMSON,
+    )
+    label_face = sans(11)
+    d.text((x + 10, y + 33), label, font=label_face, fill=MUTED)
 
 
-def render_v1():
-    """Front page, bands budgeted top to bottom with a hard overflow
-    guard. 25 stories: 1 hero + 24 in the list (12 left, 12 right)."""
-    img = Image.new("RGB", (W, H), PAPER)
+def draw_story_row(d, x, y, w, s):
+    """One story in exactly ROW_HEIGHT px: headline on the first
+    line, deck on the second, red stat right-aligned with the
+    headline. Nothing is drawn below y + ROW_HEIGHT - 5, so rows
+    can never overlap. The deck's baseline sits at y+27, four
+    pixels clear of the next row at y+31."""
+    accent = {
+        "WAR": CRIMSON,
+        "TECH": ROYAL,
+        "GULF": CRIMSON,
+        "ENERGY": OCHRE,
+    }.get(s["tag"], MAP_DOT)
+    d.rectangle([x, y + 2, x + 5, y + ROW_HEIGHT - 6], fill=accent)
+    text_x = x + 14
+    stat_face = sans_bold(12)
+    stat_width = d.textlength(s["stat"], font=stat_face)
+    head_width = w - 14 - int(stat_width) - 10
+    head_face = fit_font(d, s["headline"], sans_bold, head_width, 15, 11)
+    d.text(
+        (text_x, y + 1),
+        s["headline"],
+        font=head_face,
+        fill=TEXT_INK,
+        stroke_width=1,
+        stroke_fill=TEXT_INK,
+    )
+    d.text(
+        (x + w - stat_width, y + 2),
+        s["stat"],
+        font=stat_face,
+        fill=CRIMSON,
+        stroke_width=1,
+        stroke_fill=CRIMSON,
+    )
+    deck_face = sans(11)
+    deck_width = w - 14
+    deck = s["deck"]
+    if d.textlength(deck, font=deck_face) > deck_width:
+        deck_face = sans(10)
+        deck = ellipsize(d, deck, deck_face, deck_width)
+    d.text((text_x, y + 17), deck, font=deck_face, fill=MUTED)
+
+
+def render_front_page():
+    """Front page, bands budgeted top to bottom with a hard
+    overflow guard. 25 stories: 1 hero + 24 in the list, 12 left
+    and 12 right."""
+    img = Image.new("RGB", (W, H), SHEET)
     d = ImageDraw.Draw(img)
 
     # (1) Masthead.
-    y = masthead(d, 22)
+    y = draw_masthead(d, 22)
     print("after masthead: y=%d" % y)
 
     # (2) Hero photo band: Earth + cyclone side by side.
-    hy, hh = y, HERO_H
-    pw = (CONTENT_W - 8) // 2
-    img.paste(photo_cover(BRIDGE, pw, hh), (MARGIN, hy))
-    d.rectangle([MARGIN, hy, MARGIN + pw, hy + hh], outline=INK, width=2)
-    d.text((MARGIN + 8, hy + hh - 24), "AI ILLUSTRATION — KERCH BRIDGE",
-           font=inter(11), fill=(255, 255, 255),
-           stroke_width=2, stroke_fill=(0, 0, 0))
-    img.paste(photo_cover(TANKER, pw, hh), (MARGIN + pw + 8, hy))
-    d.rectangle([MARGIN + pw + 8, hy, MARGIN + pw + 8 + pw, hy + hh],
-                outline=INK, width=2)
-    d.text((MARGIN + pw + 8 + 8, hy + hh - 24),
-           "AI ILLUSTRATION — CYCLONE AKVAN",
-           font=inter(11), fill=(255, 255, 255),
-           stroke_width=2, stroke_fill=(0, 0, 0))
-    y = hy + hh + 8
+    photo_y, photo_h = y, HERO_HEIGHT
+    photo_w = (BODY_W - 8) // 2
+    img.paste(cover_crop(BRIDGE_IMG, photo_w, photo_h), (EDGE, photo_y))
+    d.rectangle(
+        [EDGE, photo_y, EDGE + photo_w, photo_y + photo_h],
+        outline=TEXT_INK,
+        width=2,
+    )
+    d.text(
+        (EDGE + 8, photo_y + photo_h - 24),
+        "AI ILLUSTRATION — KERCH BRIDGE",
+        font=sans(11),
+        fill=(255, 255, 255),
+        stroke_width=2,
+        stroke_fill=(0, 0, 0),
+    )
+    img.paste(
+        cover_crop(STORM_IMG, photo_w, photo_h),
+        (EDGE + photo_w + 8, photo_y),
+    )
+    d.rectangle(
+        [
+            EDGE + photo_w + 8,
+            photo_y,
+            EDGE + photo_w + 8 + photo_w,
+            photo_y + photo_h,
+        ],
+        outline=TEXT_INK,
+        width=2,
+    )
+    d.text(
+        (EDGE + photo_w + 8 + 8, photo_y + photo_h - 24),
+        "AI ILLUSTRATION — CYCLONE AKVAN",
+        font=sans(11),
+        fill=(255, 255, 255),
+        stroke_width=2,
+        stroke_fill=(0, 0, 0),
+    )
+    y = photo_y + photo_h + 8
     print("after hero: y=%d" % y)
 
-    # (3) Headline band: kicker, 1-line headline, 1-line deck, stat.
-    d.text((MARGIN, y), "UKRAINE WAR  •  TOP STORY", font=archivo(15),
-           fill=RED, stroke_width=1, stroke_fill=RED)
+    # (3) Headline band: kicker, one-line headline, one-line deck,
+    # then the hero stat on its own line below the deck.
+    d.text(
+        (EDGE, y),
+        "UKRAINE WAR  •  TOP STORY",
+        font=sans_bold(15),
+        fill=CRIMSON,
+        stroke_width=1,
+        stroke_fill=CRIMSON,
+    )
     y += 18
-    hf = fit_size(d, facts.HERO["headline"], archivo, CONTENT_W - 40, 34, 26)
-    d.text((MARGIN, y), facts.HERO["headline"], font=hf, fill=INK,
-           stroke_width=1, stroke_fill=INK)
-    y += hf.size + 6
-    deck_f = inter(15)
-    deck_lines = wrap(d, facts.HERO["deck"], deck_f, CONTENT_W - 40)
+    headline_face = fit_font(
+        d, facts.HERO["headline"], sans_bold, BODY_W - 40, 34, 26
+    )
+    d.text(
+        (EDGE, y),
+        facts.HERO["headline"],
+        font=headline_face,
+        fill=TEXT_INK,
+        stroke_width=1,
+        stroke_fill=TEXT_INK,
+    )
+    y += headline_face.size + 6
+    deck_face = sans(15)
+    deck_lines = wrap_text(d, facts.HERO["deck"], deck_face, BODY_W - 40)
     deck_lines = deck_lines[:1]
     for line in deck_lines:
-        d.text((MARGIN, y), line, font=deck_f, fill=SECOND)
+        d.text((EDGE, y), line, font=deck_face, fill=MUTED)
         y += 18
-    sf = archivo(15)
-    stat_text = facts.HERO["stat"]
-    sw = d.textlength(stat_text, font=sf)
-    d.text((MARGIN + CONTENT_W - 40 - sw, y), stat_text, font=sf,
-           fill=RED, stroke_width=1, stroke_fill=RED)
+    stat_face = sans_bold(15)
+    stat_line = facts.HERO["stat"]
+    stat_width = d.textlength(stat_line, font=stat_face)
+    d.text(
+        (EDGE + BODY_W - 40 - stat_width, y),
+        stat_line,
+        font=stat_face,
+        fill=CRIMSON,
+        stroke_width=1,
+        stroke_fill=CRIMSON,
+    )
     y += 22
     print("after headline band: y=%d" % y)
 
     # (4) Map band: dotted world map left, 2x2 big stats right.
     map_y = y
-    d.text((MARGIN, map_y), "THE DAY IN 6 CONTINENTS", font=archivo(15),
-           fill=INK, stroke_width=1, stroke_fill=INK)
-    map_h = MAP_BAND_H - 26
-    draw_map(d, MARGIN, map_y + 24, 470, map_h)
-    d.rectangle([MARGIN, map_y + 22, MARGIN + 470, map_y + MAP_BAND_H - 4],
-                outline=RULE, width=1)
-    gx = MARGIN + 470 + 12
-    gw = CONTENT_W - 470 - 12
-    cw = gw // 2
+    d.text(
+        (EDGE, map_y),
+        "THE DAY IN 6 CONTINENTS",
+        font=sans_bold(15),
+        fill=TEXT_INK,
+        stroke_width=1,
+        stroke_fill=TEXT_INK,
+    )
+    map_height = MAP_HEIGHT - 26
+    draw_world(d, EDGE, map_y + 24, 470, map_height)
+    d.rectangle(
+        [EDGE, map_y + 22, EDGE + 470, map_y + MAP_HEIGHT - 4],
+        outline=HAIRLINE,
+        width=1,
+    )
+    grid_x = EDGE + 470 + 12
+    grid_w = BODY_W - 470 - 12
+    cell_w = grid_w // 2
     stats = [
         ("$115.8B", "NVIDIA REVENUE, +103%"),
         ("5,412", "US MEASLES CASES IN 2026"),
@@ -382,26 +490,28 @@ def render_v1():
         ("4", "TANKERS HIT IN HORMUZ"),
     ]
     for i, (val, lab) in enumerate(stats):
-        cx = gx + (i % 2) * cw
-        cy = map_y + 22 + (i // 2) * STAT_CELL_H
-        stat_cell(d, cx, cy, cw - 4, val, lab)
-    y = map_y + MAP_BAND_H + 4
+        cx = grid_x + (i % 2) * cell_w
+        cy = map_y + 22 + (i // 2) * STAT_HEIGHT
+        draw_stat_cell(d, cx, cy, cell_w - 4, val, lab)
+    y = map_y + MAP_HEIGHT + 4
     print("after map+stats: y=%d" % y)
 
-    # (5) Story list: 23 stories, 2 columns, LIST_ROW_H per row.
-    y = section_head(d, y, "THE REST OF THE DAY  —  24 MORE STORIES")
-    gy = y
+    # (5) Story list: 24 stories, 2 columns, ROW_HEIGHT per row.
+    y = draw_section_head(d, y, "THE REST OF THE DAY  —  24 MORE STORIES")
+    list_y = y
     half = (len(facts.STORIES) + 1) // 2
-    col_w = (CONTENT_W - 24) // 2
+    column_w = (BODY_W - 24) // 2
     for i, s in enumerate(facts.STORIES[:half]):
-        story_row(d, MARGIN, gy + i * LIST_ROW_H, col_w, s)
+        draw_story_row(d, EDGE, list_y + i * ROW_HEIGHT, column_w, s)
     for i, s in enumerate(facts.STORIES[half:]):
-        story_row(d, MARGIN + col_w + 24, gy + i * LIST_ROW_H, col_w, s)
-    y = gy + half * LIST_ROW_H + 4
+        draw_story_row(
+            d, EDGE + column_w + 24, list_y + i * ROW_HEIGHT, column_w, s
+        )
+    y = list_y + half * ROW_HEIGHT + 4
     print("after story list: y=%d (rows=%d)" % (y, half))
 
     # (6) Footer sources line. Overflow here raises, never overlaps.
-    y = footer(d, y)
+    y = draw_footer(d, y)
     print("final y=%d (canvas %d)" % (y, H))
     if y > H:
         raise ValueError("layout overflow: final y=%d > %d" % (y, H))
@@ -409,11 +519,11 @@ def render_v1():
 
 
 VARIANTS = {
-    "v1": ("frontpage", render_v1),
+    "v1": ("frontpage", render_front_page),
 }
 
 
-def render(variant, out_path, jpeg=False, quality=90):
+def save_variant(variant, out_path, jpeg=False, quality=90):
     name, fn = VARIANTS[variant]
     img = fn()
     out_path = Path(out_path)
@@ -423,10 +533,14 @@ def render(variant, out_path, jpeg=False, quality=90):
     else:
         img.save(out_path, "PNG", optimize=True)
     data = out_path.read_bytes()
-    return {"variant": variant, "name": name, "path": str(out_path),
-            "bytes": len(data),
-            "sha256": hashlib.sha256(data).hexdigest(),
-            "size": img.size}
+    return {
+        "variant": variant,
+        "name": name,
+        "path": str(out_path),
+        "bytes": len(data),
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "size": img.size,
+    }
 
 
 def main():
@@ -437,7 +551,7 @@ def main():
     ap.add_argument("--quality", type=int, default=90)
     args = ap.parse_args()
     out = args.out or (args.variant + (".jpg" if args.jpeg else ".png"))
-    print(render(args.variant, out, args.jpeg, args.quality))
+    print(save_variant(args.variant, out, args.jpeg, args.quality))
 
 
 if __name__ == "__main__":

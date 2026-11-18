@@ -1,12 +1,11 @@
-"""Ship the pre-rendered front page for news-image-20261117.
+"""Ship the finished front page for news-image-20261117.
 
-Rebuilt 2026-11-18 in the fresh rebuild session. Rebuilt again in
-fresh session 18 Nov (first rebuild session compacted, could not
-bundle). The artwork lives in this repository as ``entry.png``
-(drawn at build time by ``render.py`` from verified 17 November
-2026 facts); this entrypoint only copies it, byte for byte, to the
-directory make.fun expects. Standard library only: no network, no
-clock, no randomness, so two runs always write identical bytes.
+The artwork is ``entry.png`` in this repository, drawn at build
+time by ``render.py`` from the verified 17 November 2026 facts.
+This entrypoint does one job only: copy that file, byte for byte,
+into the directory make.fun expects. Standard library only, no
+network, no clock, no randomness, so two runs always write
+identical bytes.
 
 Run: mkdir -p out && MAKEFUN_OUTPUT_DIR=out python3 main.py
 """
@@ -14,80 +13,91 @@ Run: mkdir -p out && MAKEFUN_OUTPUT_DIR=out python3 main.py
 import os
 import sys
 
-SOURCE = "entry.png"
-TARGET = "entry.png"
-FALLBACK_DIR = "/output"
+ARTWORK = "entry.png"
+ARTWORK_NAME = "entry.png"
+DEFAULT_OUT = "/output"
 
-PNG_HEAD = bytes((0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A))
-PNG_TAIL = bytes((0, 0, 0, 0)) + b"IEND" + bytes((0xAE, 0x42, 0x60, 0x82))
+PNG_SIGNATURE = bytes(
+    (0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A)
+)
+PNG_ENDING = (
+    bytes((0, 0, 0, 0)) + b"IEND" + bytes((0xAE, 0x42, 0x60, 0x82))
+)
 
 
-def fail(msg):
-    print("main.py: error: " + msg, file=sys.stderr)
+def die(message):
+    print("main.py: error: " + message, file=sys.stderr)
     raise SystemExit(1)
 
 
-def repo_path(name):
+def in_repo(name):
     here = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(here, name)
 
 
-def load_artwork():
-    path = repo_path(SOURCE)
+def read_artwork():
+    path = in_repo(ARTWORK)
     if not os.path.isfile(path):
-        fail("source artwork %r not found" % path)
-    with open(path, "rb") as fh:
-        blob = fh.read()
+        die("source artwork %r not found" % path)
+    with open(path, "rb") as handle:
+        blob = handle.read()
     if not blob:
-        fail("source artwork %r is empty" % path)
+        die("source artwork %r is empty" % path)
     return path, blob
 
 
-def check_png(blob, label):
-    """A whole PNG opens with the 8-byte signature and closes with
+def verify_png(blob, label):
+    """A whole PNG opens with its 8-byte signature and closes with
     the empty IEND chunk; anything else is truncated or corrupt."""
-    shortest = len(PNG_HEAD) + len(PNG_TAIL)
-    if len(blob) < shortest:
-        fail("%s is only %d bytes, too short to be a PNG"
-             % (label, len(blob)))
-    if blob[:len(PNG_HEAD)] != PNG_HEAD:
-        fail("%s does not start with the PNG signature" % label)
-    if blob[-len(PNG_TAIL):] != PNG_TAIL:
-        fail("%s does not end with the PNG IEND chunk" % label)
+    minimum_len = len(PNG_SIGNATURE) + len(PNG_ENDING)
+    if len(blob) < minimum_len:
+        die(
+            "%s is only %d bytes, too short to be a PNG"
+            % (label, len(blob))
+        )
+    if blob[: len(PNG_SIGNATURE)] != PNG_SIGNATURE:
+        die("%s does not start with the PNG signature" % label)
+    if blob[-len(PNG_ENDING):] != PNG_ENDING:
+        die("%s does not end with the PNG IEND chunk" % label)
 
 
-def out_dir():
+def output_dir():
     raw = os.environ.get("MAKEFUN_OUTPUT_DIR", "")
-    return raw if raw.strip() else FALLBACK_DIR
+    if raw.strip():
+        return raw
+    return DEFAULT_OUT
 
 
-def ship(blob):
-    dest_dir = out_dir()
+def copy_out(blob):
+    dest_dir = output_dir()
     try:
         os.makedirs(dest_dir, exist_ok=True)
     except OSError as exc:
-        fail("cannot create output directory %r: %s" % (dest_dir, exc))
-    dest = os.path.join(dest_dir, TARGET)
+        die("cannot create output directory %r: %s" % (dest_dir, exc))
+    dest = os.path.join(dest_dir, ARTWORK_NAME)
     try:
-        with open(dest, "wb") as fh:
-            fh.write(blob)
-            fh.flush()
-            os.fsync(fh.fileno())
+        with open(dest, "wb") as handle:
+            handle.write(blob)
+            handle.flush()
+            os.fsync(handle.fileno())
     except OSError as exc:
-        fail("cannot write %r: %s" % (dest, exc))
-    with open(dest, "rb") as fh:
-        written = fh.read()
+        die("cannot write %r: %s" % (dest, exc))
+    with open(dest, "rb") as handle:
+        written = handle.read()
     if written != blob:
-        fail("copy incomplete: wrote %d bytes but source has %d"
-             % (len(written), len(blob)))
+        die(
+            "copy incomplete: wrote %d bytes but source has %d"
+            % (len(written), len(blob))
+        )
     return dest
 
 
 def main():
-    src, blob = load_artwork()
-    check_png(blob, "source %r" % src)
-    dest = ship(blob)
-    check_png(open(dest, "rb").read(), "output %r" % dest)
+    src, blob = read_artwork()
+    verify_png(blob, "source %r" % src)
+    dest = copy_out(blob)
+    with open(dest, "rb") as handle:
+        verify_png(handle.read(), "output %r" % dest)
     print("wrote %s (%d bytes)" % (dest, len(blob)))
     return 0
 
