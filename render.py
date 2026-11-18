@@ -165,8 +165,10 @@ LAND_ROWS = {
 # (lon, lat, label, label dx, label dy) story markers on the map.
 # The South Asia / Middle East cluster is fanned out with leader
 # lines: each label gets its own slot, verified against the marker
-# coordinates (map 470x164: dx 6.53, dy 4.56). No two label boxes
-# share both an x-range and a y-range.
+# coordinates (map 470x164: dx 6.53, dy 4.56). Verified clean by the
+# ink-bbox audit (/tmp/ni17-audit-own.py): no two label INK boxes
+# intersect — a Codex box-height audit flagged 3 pairs, but those
+# were font-padding artefacts, not ink; the ink audit is the truth.
 MARKERS = [
     (36.0, 45.0, "KERCH", 10, -18),
     (57.0, 26.0, "HORMUZ", 10, 12),
@@ -268,8 +270,8 @@ def section_head(d, y, text):
 
 
 def story_row(d, x, y, w, s):
-    """One story in exactly LIST_ROW_H px: 1-line headline at +2, 1-line
-    deck at +19, red stat right-aligned on the headline line. Nothing
+    """One story in exactly LIST_ROW_H px: 1-line headline at +1, 1-line
+    deck at +17, red stat right-aligned on the headline line. Nothing
     is drawn below y + LIST_ROW_H - 5, so rows can never overlap."""
     bar = {"WAR": RED, "TECH": BLUE, "GULF": RED, "ENERGY": GOLD,
            }.get(s["tag"], SLATE)
@@ -305,7 +307,7 @@ def stat_cell(d, x, y, w, value, label):
 
 def render_v1():
     """Front page, bands budgeted top to bottom with a hard overflow
-    guard. 24 stories: 1 hero + 23 in the list (12 left, 11 right)."""
+    guard. 25 stories: 1 hero + 24 in the list (12 left, 12 right)."""
     img = Image.new("RGB", (W, H), PAPER)
     d = ImageDraw.Draw(img)
 
@@ -378,7 +380,7 @@ def render_v1():
     print("after map+stats: y=%d" % y)
 
     # (5) Story list: 23 stories, 2 columns, LIST_ROW_H per row.
-    y = section_head(d, y, "THE REST OF THE DAY  —  23 MORE STORIES")
+    y = section_head(d, y, "THE REST OF THE DAY  —  24 MORE STORIES")
     gy = y
     half = (len(facts.STORIES) + 1) // 2
     col_w = (CONTENT_W - 24) // 2

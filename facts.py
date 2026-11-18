@@ -13,7 +13,7 @@ sources disagreed on a toll, the lower official figure is used.
 
 DATE_LINE = "TUESDAY, 17 NOVEMBER 2026"
 MASTHEAD = "WORLD NEWS"
-SUBHEAD = "24 STORIES  •  6 CONTINENTS  •  ONE DAY"
+SUBHEAD = "25 STORIES  •  6 CONTINENTS  •  ONE DAY"
 
 HERO = {
     "tag": "UKRAINE WAR",
@@ -28,6 +28,9 @@ STORIES = [
     {"tag": "TECH", "headline": "NVIDIA SALES DOUBLE WITHOUT HUANG",
      "deck": "First results since Huang quit: $115.8B revenue, +103%; Q4 guide $130B.",
      "stat": "$115.8B  +103%"},
+    {"tag": "TECH", "headline": "NVIDIA DEBUTS RUBIN HPC CHIP",
+     "deck": "Rubin HPC unveiled at SC26 in Chicago; 50,000+ CUDA cores, NVLink 7, ships 2028.",
+     "stat": "50,000+ CORES"},
     {"tag": "HEALTH", "headline": "US LOSES MEASLES-FREE STATUS",
      "deck": "PAHO ends 26 years of elimination; 5,412 cases in 2026, most in 35 years.",
      "stat": "5,412 CASES"},
@@ -105,4 +108,4 @@ BIG_STATS = [
 ]
 
 FOOTER_SOURCES = ("SOURCES: REUTERS  •  AP  •  BBC  •  CNN  •  BLOOMBERG  •  PAHO  •  CDC  •  "
-                   "ALL STORIES VERIFIED 17 NOV 2026  •  PHOTOS: AI-GENERATED ILLUSTRATIONS")
+                   "SILICONANGLE  •  HOTHARDWARE  •  ALL VERIFIED 17 NOV 2026")
