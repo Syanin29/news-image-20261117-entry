@@ -354,8 +354,11 @@ def v1_frontpage():
     d = ImageDraw.Draw(img)
     img = paper_texture(img)
     d = ImageDraw.Draw(img)
+    
+    # (1) Masthead
     y = masthead(d, 22)
-    # hero: two photos side by side with captions
+    
+    # (2) Hero photo band - keep as is
     hy = y
     hh = 190
     pw = (CONTENT_W - 8) // 2
@@ -373,48 +376,82 @@ def v1_frontpage():
     d.text((MARGIN + pw + 8 + 8, hy + hh - 24), "AI ILLUSTRATION — CYCLONE AKVAN",
            font=inter(11), fill=(255, 255, 255),
            stroke_width=2, stroke_fill=(0, 0, 0))
-    # Headline block below the hero photos
-    y = hy + hh + 10
+    
+    # --- End of hero band ---
+    # y is now at hy + hh
+    
+    # (3) Headline band: its own height, NO overlap with map or stats
+    y = hy + hh + 10  # start below hero
+    
+    # Kicker
     d.text((MARGIN, y), "UKRAINE WAR  •  TOP STORY", font=archivo(15),
            fill=RED, stroke_width=1, stroke_fill=RED)
-    hf = fit_size(d, "KERCH BRIDGE SPAN DESTROYED", archivo, CONTENT_W - 20, 40, 24)
-    lines = wrap(d, "KERCH BRIDGE SPAN DESTROYED", hf, CONTENT_W - 20)
-    yy = y + 26
+    y += 24  # height for kicker
+    
+    # Headline - sized to fit its own width without running under stat box
+    # Use CONTENT_W - 40 as max width (leave margin on both sides)
+    hf = fit_size(d, "KERCH BRIDGE SPAN DESTROYED", archivo, CONTENT_W - 40, 40, 24)
+    lines = wrap(d, "KERCH BRIDGE SPAN DESTROYED", hf, CONTENT_W - 40)
+    yy = y + 26  # 26 = 20 (descender space) + 6 (extra)
     for line in lines:
         d.text((MARGIN, yy), line, font=hf, fill=INK, stroke_width=1,
                stroke_fill=INK)
         yy += hf.size + 2
+    y = yy + 10  # y after headline, with 10px descent buffer
+    
+    # Deck text
     deck_f = inter(16)
-    for line in wrap(d, facts.HERO["deck"], deck_f, CONTENT_W - 20):
+    for line in wrap(d, facts.HERO["deck"], deck_f, CONTENT_W - 40):
         d.text((MARGIN, yy), line, font=deck_f, fill=SECOND)
         yy += 21
-    yy += 4
+    y = yy + 6  # y after deck, with 6px buffer
+    
+    # Stat line - designed to NOT extend under any other band
     sf = archivo(15)
-    d.text((MARGIN, yy), facts.HERO["stat"], font=sf, fill=RED, stroke_width=1,
+    stat_text = facts.HERO["stat"]
+    sw = d.textlength(stat_text, font=sf)
+    # Place stat on its own line, right-aligned within content width, but NOT under map
+    d.text((MARGIN + CONTENT_W - 40 - sw, yy), stat_text, font=sf, fill=RED, stroke_width=1,
            stroke_fill=RED)
-    y = hy + hh + 10
-    # middle band: map left, big stats right
-    band_h = 150
+    y = yy + 28  # y after stat line (28 = stat height + buffer)
+    
+    # --- End of headline band ---
+    # y is now at position below headline
+    
+    # (4) Map band: dotted world map with 14 markers/labels in its OWN band
+    # No text from any other band inside it
+    band_h = 150  # height for map drawing
     d.text((MARGIN, y), "THE DAY IN 6 CONTINENTS", font=archivo(15),
            fill=INK, stroke_width=1, stroke_fill=INK)
+    # Draw map - 470px wide, starting at MARGIN
     draw_map(d, MARGIN, y + 24, 470, band_h - 30)
     d.rectangle([MARGIN, y + 22, MARGIN + 470, y + band_h - 4],
                 outline=RULE, width=1)
-    big_stats(d, MARGIN + 486, y, CONTENT_W - 486, band_h)
-    y += band_h + 10
+    # y position after map band
+    y += band_h + 6  # buffer after map
+    
+    # (5) Stats row - below the map band
+    # Place stats row spanning the content width, below the map
+    big_stats(d, MARGIN, y, CONTENT_W, 40)  # height 40 for stats row
+    y += 40 + 6  # buffer after stats
+    
+    # (6) The 24-story list
     y = section_head(d, y, "THE REST OF THE DAY  —  23 MORE STORIES")
     gy = y
     half = (len(facts.STORIES) + 1) // 2
     col_w = (CONTENT_W - 24) // 2
     for i, s in enumerate(facts.STORIES[:half]):
-        story_row(d, MARGIN, gy + i * 36, col_w, s, head_start=15,
-                  deck_size=11, row_h=36)
+        story_row(d, MARGIN, gy + i * 21, col_w, s, head_start=15,
+                  deck_size=11, row_h=21)
     for i, s in enumerate(facts.STORIES[half:]):
-        story_row(d, MARGIN + col_w + 24, gy + i * 36, col_w, s,
-                  head_start=15, deck_size=11, row_h=36)
-    y = gy + half * 36 + 6
+        story_row(d, MARGIN + col_w + 24, gy + i * 21, col_w, s,
+                  head_start=15, deck_size=11, row_h=21)
+    y = gy + half * 21 + 2  # updated from half * 30 + 6, with small buffer
     footer(d, y)
     return img
+
+
+
 
 
 def v2_magazine():
