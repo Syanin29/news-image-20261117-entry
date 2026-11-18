@@ -1,11 +1,12 @@
 """Ship the pre-rendered front page for news-image-20261117.
 
-Rebuilt 2026-11-18 in the fresh rebuild session. The artwork lives in
-this repository as ``entry.png`` (drawn at build time by ``render.py``
-from verified 17 November 2026 facts); this entrypoint only copies it,
-byte for byte, to the directory make.fun expects. Standard library
-only: no network, no clock, no randomness, so two runs always write
-identical bytes.
+Rebuilt 2026-11-18 in the fresh rebuild session. Rebuilt again in
+fresh session 18 Nov (first rebuild session compacted, could not
+bundle). The artwork lives in this repository as ``entry.png``
+(drawn at build time by ``render.py`` from verified 17 November
+2026 facts); this entrypoint only copies it, byte for byte, to the
+directory make.fun expects. Standard library only: no network, no
+clock, no randomness, so two runs always write identical bytes.
 
 Run: mkdir -p out && MAKEFUN_OUTPUT_DIR=out python3 main.py
 """

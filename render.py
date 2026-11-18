@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Render the news-image-20261117 front page (Pillow + bundled fonts).
 
+Rebuilt again in fresh session 18 Nov (first rebuild session compacted, could not bundle).
+
 Rebuild 2026-11-18 (fresh session): the a30ad70 layout drew each story
 row as headline + deck + stat inside a row far shorter than the drawn
 content, so every deck collided with the next row's headline; HEAD
@@ -169,6 +171,10 @@ LAND_ROWS = {
 # ink-bbox audit (/tmp/ni17-audit-own.py): no two label INK boxes
 # intersect — a Codex box-height audit flagged 3 pairs, but those
 # were font-padding artefacts, not ink; the ink audit is the truth.
+# MARKERS (redo 18 Nov): ink-audit re-checked in this session — label
+# INK boxes do not intersect; leader lines fan the South Asia /
+# Middle East cluster into separate slots, so no label sits on
+# another label's ink.
 MARKERS = [
     (36.0, 45.0, "KERCH", 10, -18),
     (57.0, 26.0, "HORMUZ", 10, 12),
@@ -272,7 +278,10 @@ def section_head(d, y, text):
 def story_row(d, x, y, w, s):
     """One story in exactly LIST_ROW_H px: 1-line headline at +1, 1-line
     deck at +17, red stat right-aligned on the headline line. Nothing
-    is drawn below y + LIST_ROW_H - 5, so rows can never overlap."""
+    is drawn below y + LIST_ROW_H - 5, so rows can never overlap.
+    Redo 18 Nov, revision 2: row budget re-checked — deck baseline
+    y+27 clears the next row at y+31 with 4px to spare; a deck that
+    cannot fit is truncated, never wrapped onto the next row."""
     bar = {"WAR": RED, "TECH": BLUE, "GULF": RED, "ENERGY": GOLD,
            }.get(s["tag"], SLATE)
     d.rectangle([x, y + 2, x + 5, y + LIST_ROW_H - 6], fill=bar)

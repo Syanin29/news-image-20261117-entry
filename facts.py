@@ -6,6 +6,10 @@ their syndication) and confirmed as happening, or first reported,
 on 17 November 2026. One disputed item (an unreviewed claim about
 Jeffrey Epstein's death) was deliberately left out.
 
+Rebuilt again in fresh session 18 Nov (first rebuild session
+compacted, could not bundle) — values unchanged from the verified
+v2 set; only this header note was added.
+
 Fields per story: region tag, headline (<=6 words), one-line deck,
 big stat. Story 1 is the hero. Figures are as reported; where two
 sources disagreed on a toll, the lower official figure is used.
