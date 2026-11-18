@@ -14,6 +14,11 @@ collide with the headline below it. Headlines are fitted to a
 single line; a deck that cannot fit is shortened with an ellipsis
 instead of spilling over.
 
+The world map is dotted from run-length rows: each row of the
+72-column grid is a short spec like "20.3#2.5#42." (20 ocean
+cells, 3 land cells, 2 ocean, 5 land, 42 ocean). Story markers
+are small dicts with a label and an offset from their dot.
+
 Every word on the page comes from facts.py (verified 17 November
 2026 stories only). The two hero pictures are AI-generated
 illustrations held in assets/. Nothing here uses the clock, the
@@ -104,17 +109,20 @@ def wrap_text(d, text, face, max_width):
 
 
 def fit_font(d, text, face_fn, max_w, start_size, floor=6):
-    """Biggest size at which text still fits max_w on one line."""
-    pt = start_size
-    while pt > floor:
+    """Biggest size at which text still fits max_w on one line.
+
+    Sizes are tried from the floor upward and the largest one
+    that fits is kept; when even the floor size is too wide the
+    text cannot be drawn at all.
+    """
+    best = None
+    for pt in range(floor, start_size + 1):
         face = face_fn(pt)
         if d.textlength(text, font=face) <= max_w:
-            return face
-        pt -= 1
-    face = face_fn(floor)
-    if d.textlength(text, font=face) > max_w:
-        raise ValueError("text does not fit even at floor size: %r" % text)
-    return face
+            best = face
+    if best is not None:
+        return best
+    raise ValueError("text does not fit even at floor size: %r" % text)
 
 
 def ellipsize(d, text, face, max_w):
@@ -129,61 +137,176 @@ def ellipsize(d, text, face, max_w):
     return mark
 
 
-# ---- world landmask: 72 columns by 36 rows, 5-degree cells,
-# longitude -180..180, latitude 90..-90. Each row lists the
-# inclusive column ranges that hold land. Hand-built from a world
-# atlas; coarse, but the continents read clearly as dots. ----
-LAND_MASK = {
-    1: [(20, 22), (25, 29)],
-    2: [(8, 24), (25, 31), (38, 42), (50, 53), (58, 60), (66, 70)],
-    3: [(2, 8), (9, 26), (26, 31), (39, 42), (44, 71)],
-    4: [(2, 9), (10, 27), (25, 32), (31, 33), (38, 45), (45, 71)],
-    5: [(3, 10), (11, 27), (27, 30), (34, 36), (37, 45), (45, 71)],
-    6: [(11, 16), (21, 27), (34, 36), (37, 44), (45, 71)],
-    7: [(11, 16), (21, 26), (34, 36), (37, 48), (48, 71)],
-    8: [(11, 26), (35, 44), (47, 71)],
-    9: [(11, 24), (34, 36), (38, 40), (41, 45), (46, 46), (48, 68), (64, 65)],
-    10: [(12, 24), (34, 36), (38, 40), (41, 45), (46, 50), (52, 66), (63, 66)],
-    11: [(13, 24), (33, 46), (46, 50), (51, 55), (55, 64), (63, 64)],
-    12: [(13, 19), (33, 46), (46, 50), (51, 54), (55, 58), (60, 63)],
-    13: [(14, 19), (33, 46), (47, 50), (51, 54), (56, 59)],
-    14: [(17, 20), (33, 46), (52, 54), (56, 60)],
-    15: [(18, 21), (34, 45), (53, 53), (56, 59), (61, 63)],
-    16: [(20, 23), (35, 44), (57, 62), (66, 68)],
-    17: [(20, 26), (36, 43), (58, 63), (66, 69)],
-    18: [(20, 28), (37, 43), (58, 63), (66, 69)],
-    19: [(21, 28), (38, 43), (59, 62), (66, 68)],
-    20: [(21, 28), (38, 44), (45, 46), (60, 66)],
-    21: [(22, 28), (38, 44), (45, 45), (59, 66)],
-    22: [(22, 27), (38, 43), (45, 45), (59, 66)],
-    23: [(22, 26), (38, 42), (59, 66)],
-    24: [(22, 25), (38, 41), (60, 66), (69, 70)],
-    25: [(22, 24), (61, 64), (69, 70)],
-    26: [(22, 24), (69, 69)],
-    27: [(22, 23)],
-    28: [(22, 22)],
-}
+def _runs_to_cols(spec):
+    """Expand one run-length row spec into its land columns.
 
-# Story markers on the map: (lon, lat, label, label dx, label dy).
-# The South Asia / Middle East cluster is fanned out with leader
-# lines so every label gets its own slot. The label ink boxes were
-# audited directly (not their font bounding boxes): no two label
-# ink boxes intersect.
+    A spec is a run of counts each followed by "." (ocean) or
+    "#" (land), for example "20.3#2.5#42.". Every row must add
+    up to exactly 72 columns or the map is misaligned.
+    """
+    cols = []
+    cursor = 0
+    i = 0
+    while i < len(spec):
+        j = i
+        while j < len(spec) and spec[j].isdigit():
+            j += 1
+        count = int(spec[i:j])
+        if spec[j] == "#":
+            cols.extend(range(cursor, cursor + count))
+        cursor += count
+        i = j + 1
+    if cursor != 72:
+        raise ValueError(
+            "land row does not add up to 72 columns: %r" % spec
+        )
+    return cols
+
+
+# World landmask as run-length rows: (grid row, spec). The grid
+# is 72 columns by 36 rows of 5-degree cells, longitude -180..180,
+# latitude 90..-90. Only rows with land are listed; the rest of
+# the grid is ocean. Hand-built from a world atlas; coarse, but
+# the continents read clearly as dots.
+LAND_RUNS = [
+    (1, "20.3#2.5#42."),
+    (2, "8.24#6.5#7.4#4.3#5.5#1."),
+    (3, "2.30#7.4#1.28#"),
+    (4, "2.32#4.34#"),
+    (5, "3.28#3.3#35#"),
+    (6, "11.6#4.7#6.3#35#"),
+    (7, "11.6#4.6#7.3#35#"),
+    (8, "11.16#8.10#2.25#"),
+    (9, "11.14#9.3#1.9#1.21#3."),
+    (10, "12.13#9.3#1.13#1.15#5."),
+    (11, "13.12#8.18#14#7."),
+    (12, "13.7#13.18#8#1.4#8."),
+    (13, "14.6#13.14#4#4#1.4#12."),
+    (14, "17.4#12.14#5.3#1.5#11."),
+    (15, "18.4#12.12#7.1#2.4#1.3#8."),
+    (16, "20.4#11.10#12.6#3.3#3."),
+    (17, "20.7#9.8#14.6#2.4#2."),
+    (18, "20.9#8.7#14.6#2.4#2."),
+    (19, "21.8#9.6#15.4#3.3#3."),
+    (20, "21.8#9.9#13.7#5."),
+    (21, "22.7#9.8#13.8#5."),
+    (22, "22.6#10.6#1.1#13.8#5."),
+    (23, "22.5#11.5#16.8#5."),
+    (24, "22.4#12.4#18.7#2.2#1."),
+    (25, "22.3#36.4#4.2#1."),
+    (26, "22.3#44.1#2."),
+    (27, "22.2#48."),
+    (28, "22.1#49."),
+]
+
+# Every land dot as a (column, row) pair, top row first.
+LAND_DOTS = [
+    (col, row) for row, spec in LAND_RUNS for col in _runs_to_cols(spec)
+]
+
+# Story markers on the map. The South Asia / Middle East cluster
+# is fanned out with leader lines so every label gets its own
+# slot. The label ink boxes were audited directly (not their font
+# bounding boxes): no two label ink boxes intersect.
 MAP_MARKERS = [
-    (36.0, 45.0, "KERCH", 10, -18),
-    (57.0, 26.0, "HORMUZ", 10, 12),
-    (121.0, 14.0, "MANILA", 8, -16),
-    (-77.0, 39.0, "WASHINGTON", -15, -14),
-    (35.2, 31.8, "JERUSALEM", -58, -12),
-    (72.9, 19.1, "MUMBAI", 10, 20),
-    (-0.1, 51.5, "LONDON", -8, -18),
-    (77.2, 28.6, "NEW DELHI", -6, -24),
-    (90.4, 23.8, "DHAKA", 12, 4),
-    (80.3, 13.1, "CHENNAI", 6, 32),
-    (114.1, 22.5, "SHENZHEN", -6, -18),
-    (85.7, 12.2, "Bay of Bengal", 14, 44),
-    (30.5, 50.4, "KYIV", 10, -26),
-    (-3.7, 40.4, "MADRID", 8, 14),
+    {
+        "label": "KERCH",
+        "lon": 36.0,
+        "lat": 45.0,
+        "dx": 10,
+        "dy": -18,
+    },
+    {
+        "label": "HORMUZ",
+        "lon": 57.0,
+        "lat": 26.0,
+        "dx": 10,
+        "dy": 12,
+    },
+    {
+        "label": "MANILA",
+        "lon": 121.0,
+        "lat": 14.0,
+        "dx": 8,
+        "dy": -16,
+    },
+    {
+        "label": "WASHINGTON",
+        "lon": -77.0,
+        "lat": 39.0,
+        "dx": -15,
+        "dy": -14,
+    },
+    {
+        "label": "JERUSALEM",
+        "lon": 35.2,
+        "lat": 31.8,
+        "dx": -58,
+        "dy": -12,
+    },
+    {
+        "label": "MUMBAI",
+        "lon": 72.9,
+        "lat": 19.1,
+        "dx": 10,
+        "dy": 20,
+    },
+    {
+        "label": "LONDON",
+        "lon": -0.1,
+        "lat": 51.5,
+        "dx": -8,
+        "dy": -18,
+    },
+    {
+        "label": "NEW DELHI",
+        "lon": 77.2,
+        "lat": 28.6,
+        "dx": -6,
+        "dy": -24,
+    },
+    {
+        "label": "DHAKA",
+        "lon": 90.4,
+        "lat": 23.8,
+        "dx": 12,
+        "dy": 4,
+    },
+    {
+        "label": "CHENNAI",
+        "lon": 80.3,
+        "lat": 13.1,
+        "dx": 6,
+        "dy": 32,
+    },
+    {
+        "label": "SHENZHEN",
+        "lon": 114.1,
+        "lat": 22.5,
+        "dx": -6,
+        "dy": -18,
+    },
+    {
+        "label": "Bay of Bengal",
+        "lon": 85.7,
+        "lat": 12.2,
+        "dx": 14,
+        "dy": 44,
+    },
+    {
+        "label": "KYIV",
+        "lon": 30.5,
+        "lat": 50.4,
+        "dx": 10,
+        "dy": -26,
+    },
+    {
+        "label": "MADRID",
+        "lon": -3.7,
+        "lat": 40.4,
+        "dx": 8,
+        "dy": 14,
+    },
 ]
 
 
@@ -201,43 +324,42 @@ def draw_world(d, x0, y0, w, h, dot=MAP_DOT, marker=CRIMSON, labels=True):
     step_x = w / 72.0
     step_y = h / 36.0
     radius = max(1.6, min(step_x, step_y) * 0.34)
-    for row, spans in LAND_MASK.items():
+    for col, row in LAND_DOTS:
+        cx = x0 + (col + 0.5) * step_x
         cy = y0 + (row + 0.5) * step_y
-        for a, b in spans:
-            for col in range(a, b + 1):
-                cx = x0 + (col + 0.5) * step_x
-                d.ellipse(
-                    [cx - radius, cy - radius, cx + radius, cy + radius],
-                    fill=dot,
-                )
+        d.ellipse(
+            [cx - radius, cy - radius, cx + radius, cy + radius],
+            fill=dot,
+        )
     if labels:
         label_face = sans(10)
         leader_rgb = (225, 110, 110)
-        for lon, lat, name, ldx, ldy in MAP_MARKERS:
-            mx, my = project_point(lon, lat, x0, y0, w, h)
-            if name:
-                lx, ly = mx + ldx, my + ldy
-                lw = d.textlength(name, font=label_face)
-                d.line(
-                    [mx, my, lx + lw / 2, ly + 5],
-                    fill=leader_rgb,
-                    width=1,
-                )
+        for mark in MAP_MARKERS:
+            mx, my = project_point(
+                mark["lon"], mark["lat"], x0, y0, w, h
+            )
+            name = mark["label"]
+            lx, ly = mx + mark["dx"], my + mark["dy"]
+            lw = d.textlength(name, font=label_face)
+            d.line(
+                [mx, my, lx + lw / 2, ly + 5],
+                fill=leader_rgb,
+                width=1,
+            )
             d.ellipse(
                 [mx - 4, my - 4, mx + 4, my + 4], fill=marker
             )
-            if name:
-                # A paper-coloured halo knocks out the land dots
-                # behind the text, so a label over the map stays
-                # readable.
-                d.text(
-                    (mx + ldx, my + ldy),
-                    name,
-                    font=label_face,
-                    fill=marker,
-                    stroke_width=2,
-                    stroke_fill=SHEET,
-                )
+            # A paper-coloured halo knocks out the land dots
+            # behind the text, so a label over the map stays
+            # readable.
+            d.text(
+                (lx, ly),
+                name,
+                font=label_face,
+                fill=marker,
+                stroke_width=2,
+                stroke_fill=SHEET,
+            )
 
 
 def cover_crop(path, tw, th):
@@ -378,45 +500,30 @@ def render_front_page():
     y = draw_masthead(d, 22)
     print("after masthead: y=%d" % y)
 
-    # (2) Hero photo band: Earth + cyclone side by side.
+    # (2) Hero photo band: the two illustrations side by side,
+    # each with its caption burned into the bottom corner.
     photo_y, photo_h = y, HERO_HEIGHT
     photo_w = (BODY_W - 8) // 2
-    img.paste(cover_crop(BRIDGE_IMG, photo_w, photo_h), (EDGE, photo_y))
-    d.rectangle(
-        [EDGE, photo_y, EDGE + photo_w, photo_y + photo_h],
-        outline=TEXT_INK,
-        width=2,
-    )
-    d.text(
-        (EDGE + 8, photo_y + photo_h - 24),
-        "AI ILLUSTRATION — KERCH BRIDGE",
-        font=sans(11),
-        fill=(255, 255, 255),
-        stroke_width=2,
-        stroke_fill=(0, 0, 0),
-    )
-    img.paste(
-        cover_crop(STORM_IMG, photo_w, photo_h),
-        (EDGE + photo_w + 8, photo_y),
-    )
-    d.rectangle(
-        [
-            EDGE + photo_w + 8,
-            photo_y,
-            EDGE + photo_w + 8 + photo_w,
-            photo_y + photo_h,
-        ],
-        outline=TEXT_INK,
-        width=2,
-    )
-    d.text(
-        (EDGE + photo_w + 8 + 8, photo_y + photo_h - 24),
-        "AI ILLUSTRATION — CYCLONE AKVAN",
-        font=sans(11),
-        fill=(255, 255, 255),
-        stroke_width=2,
-        stroke_fill=(0, 0, 0),
-    )
+    photos = [
+        (BRIDGE_IMG, "AI ILLUSTRATION — KERCH BRIDGE"),
+        (STORM_IMG, "AI ILLUSTRATION — CYCLONE AKVAN"),
+    ]
+    for i, (path, caption) in enumerate(photos):
+        px = EDGE + i * (photo_w + 8)
+        img.paste(cover_crop(path, photo_w, photo_h), (px, photo_y))
+        d.rectangle(
+            [px, photo_y, px + photo_w, photo_y + photo_h],
+            outline=TEXT_INK,
+            width=2,
+        )
+        d.text(
+            (px + 8, photo_y + photo_h - 24),
+            caption,
+            font=sans(11),
+            fill=(255, 255, 255),
+            stroke_width=2,
+            stroke_fill=(0, 0, 0),
+        )
     y = photo_y + photo_h + 8
     print("after hero: y=%d" % y)
 
@@ -523,15 +630,12 @@ VARIANTS = {
 }
 
 
-def save_variant(variant, out_path, jpeg=False, quality=90):
+def save_variant(variant, out_path):
     name, fn = VARIANTS[variant]
     img = fn()
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    if jpeg:
-        img.save(out_path, "JPEG", quality=quality, optimize=True)
-    else:
-        img.save(out_path, "PNG", optimize=True)
+    img.save(out_path, "PNG", optimize=True)
     data = out_path.read_bytes()
     return {
         "variant": variant,
@@ -547,11 +651,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--variant", choices=list(VARIANTS), default="v1")
     ap.add_argument("--out", default=None)
-    ap.add_argument("--jpeg", action="store_true")
-    ap.add_argument("--quality", type=int, default=90)
     args = ap.parse_args()
-    out = args.out or (args.variant + (".jpg" if args.jpeg else ".png"))
-    print(save_variant(args.variant, out, args.jpeg, args.quality))
+    out = args.out or (args.variant + ".png")
+    print(save_variant(args.variant, out))
 
 
 if __name__ == "__main__":
