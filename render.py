@@ -419,7 +419,9 @@ def render_v1():
 
     # (4) Map band: dotted world map with 14 markers/labels in its OWN band
     # No text from any other band inside it
-    band_h = 150  # height for map drawing
+    # NOTE (SIC fix-5): band_h was 150; trimmed to 130 to pay for the taller
+    # one-row stats band below (footer must start at y<=998 on a 1024 canvas).
+    band_h = 130  # height for map drawing
     d.text((MARGIN, y), "THE DAY IN 6 CONTINENTS", font=archivo(15),
            fill=INK, stroke_width=1, stroke_fill=INK)
     # Draw map - 470px wide, starting at MARGIN
@@ -430,10 +432,15 @@ def render_v1():
     y += band_h + 6  # buffer after map
 
     # (5) Stats row - below the map band, with own band and explicit y coordinates
-    # Draw 4 stat boxes in a row, each with filled background and text inside
+    # Draw 4 stat boxes in a row, each with filled background and text inside.
+    # NOTE (SIC 2026-11-18, fix-5): the old call used big_stats(), a 2x2 GRID,
+    # with stat_box_h=40, so each cell was only 20px tall while its number is
+    # up to 40px + label below: text overflowed ~35px past the boxes, row 0
+    # overlapped row 1, and everything spilled into the story list. stat_row()
+    # draws the same 4 stats in ONE row, so h=64 fits number (<=30) + label.
     stats_row_y = y
-    stat_box_h = 40
-    big_stats(d, MARGIN, stats_row_y, CONTENT_W, stat_box_h)
+    stat_box_h = 64
+    stat_row(d, MARGIN, stats_row_y, CONTENT_W, stat_box_h)
     y = stats_row_y + stat_box_h + 6  # buffer after stats row
 
     # (6) The 24-story list - starts BELOW the stat boxes with a clear gap
