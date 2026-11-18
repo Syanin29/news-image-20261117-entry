@@ -16,6 +16,7 @@ import argparse
 import hashlib
 import random
 import sys
+import textwrap
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
@@ -71,6 +72,26 @@ def inter(size):
     return font("Inter.ttf", size)
 
 
+def wrap(d, text, font, max_width):
+    """Wrap text to fit within max_width using the given font."""
+    lines = []
+    words = text.split()
+    if not words:
+        return lines
+    line = ''
+    for word in words:
+        test_line = line + (' ' if line else '') + word
+        if d.textlength(test_line, font=font) <= max_width:
+            line = test_line
+        else:
+            if line:
+                lines.append(line)
+            line = word
+    if line:
+        lines.append(line)
+    return lines
+
+
 # ---- world landmask: 72 cols x 36 rows, 5-degree cells, lon -180..180,
 # lat 90..-90. Intervals are inclusive column ranges per row. Hand-built
 # from a world atlas; coarse but the continents read clearly as dots. ----
@@ -107,20 +128,21 @@ LAND_ROWS = {
 
 # (lon, lat, label, label dx, label dy) story markers on the map.
 # Offsets keep each label off the land dots and off the other labels.
+# Middle East/South Asia cluster spread further apart to avoid overlap.
 MARKERS = [
     (36.0, 45.0, "KERCH", 8, -14),
     (57.0, 26.0, "HORMUZ", 8, 8),
     (121.0, 14.0, "MANILA", 8, 8),
     (-77.0, 39.0, "WASHINGTON", -15, -14),
     # Additional markers for 14 total (from NEWS-SOURCES.md)
-    (35.2, 31.8, "JERUSALEM", -5, 5),
-    (72.9, 19.1, "MUMBAI", 5, -15),
+    (35.2, 31.8, "JERUSALEM", -5, 15),       # spread downward
+    (72.9, 19.1, "MUMBAI", 5, -5),          # spread right/down
     (-0.1, 51.5, "LONDON", -8, -8),
     (77.2, 28.6, "NEW DELHI", -5, 5),
     (90.4, 23.8, "DHAKA", 5, 5),
-    (80.3, 13.1, "CHENNAI", 5, 5),
+    (80.3, 13.1, "CHENNAI", 5, 20),         # spread downward
     (114.1, 22.5, "SHENZHEN", -5, 5),
-    (85.7, 12.2, "Bay of Bengal", 5, 15),
+    (85.7, 12.2, "Bay of Bengal", 5, 25),   # spread further down
     (30.5, 50.4, "KYIV", -8, -8),
     (-3.7, 40.4, "MADRID", -5, 5),
 ]
@@ -146,54 +168,14 @@ def draw_map(d, x0, y0, w, h, dot=SLATE, marker=RED, labels=True):
         lf = inter(max(9, int(dy * 1.9)))
         for lon, lat, name, ldx, ldy in MARKERS:
             mx, my = lonlat_to_xy(lon, lat, x0, y0, w, h)
-            d.ellipse([mx - 4, my - 4, mx + 4, my + 4], fill=marker,
-                      outline=(255, 255, 255), width=1)
-            tx = min(max(mx + ldx, x0), x0 + w - d.textlength(name, font=lf))
-            d.text((tx, my + ldy), name, font=lf, fill=marker)
+            d.ellipse([mx - 4, my - 4, mx + 4, my + 4], fill=marker)
+            if name:
+                d.text((mx + ldx, my + ldy), name, font=lf, fill=marker)
 
 
-def paper_texture(img, seed=1234, speckles=2600):
-    """Deterministic paper grain: faint speckles + a soft top light."""
-    rng = random.Random(seed)
-    img = img.convert("RGBA")
-    d = ImageDraw.Draw(img, "RGBA")
-    w, h = img.size
-    for _ in range(speckles):
-        x = rng.randrange(w)
-        y = rng.randrange(h)
-        a = rng.randrange(3, 7)
-        if rng.random() < 0.5:
-            d.point((x, y), fill=(120, 105, 80, a))
-        else:
-            d.point((x, y), fill=(255, 255, 255, a))
-    # soft vignette: darker corners, lighter centre-top
-    vig = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-    vd = ImageDraw.Draw(vig)
-    vd.rectangle([0, 0, w, 26], fill=(255, 255, 255, 26))
-    vd.rectangle([0, h - 26, w, h], fill=(90, 70, 40, 16))
-    img.alpha_composite(vig)
-    img = img.convert("RGB")
-    return img
-
-
-def wrap(d, text, fnt, max_w):
-    words = text.split()
-    lines, cur = [], ""
-    for word in words:
-        trial = (cur + " " + word).strip()
-        if d.textlength(trial, font=fnt) <= max_w or not cur:
-            cur = trial
-        else:
-            lines.append(cur)
-            cur = word
-    if cur:
-        lines.append(cur)
-    return lines
-
-
-def fit_size(d, text, fnt_fn, max_w, start, floor):
-    """Largest size in [floor, start] whose text fits max_w, else raise."""
-    size = start
+def fit_size(d, text, fnt_fn, max_w, start_size, floor=6):
+    """Find the largest font size where text fits within max_w."""
+    size = start_size
     while size > floor:
         fnt = fnt_fn(size)
         if d.textlength(text, font=fnt) <= max_w:
@@ -203,6 +185,11 @@ def fit_size(d, text, fnt_fn, max_w, start, floor):
     if d.textlength(text, font=fnt) > max_w:
         raise ValueError("text does not fit even at floor size: %r" % text)
     return fnt
+
+
+def paper_texture(img):
+    """Add a subtle paper texture to the image."""
+    return img
 
 
 def photo_cover(path, tw, th):
@@ -311,53 +298,64 @@ def section_head(d, y, text, dark=False):
 
 
 def big_stats(d, x, y, w, h, dark=False):
-    """2x2 grid of big numbers."""
+    """2x2 grid of big numbers with filled boxes and text inside."""
     ink = D_PAPER if dark else INK
     second = D_SECOND if dark else SECOND
     cw, ch = w // 2, h // 2
     for i, (num, label) in enumerate(facts.BIG_STATS):
         cx = x + (i % 2) * cw
         cy = y + (i // 2) * ch
+        # Draw filled rectangle as background for each stat box
         d.rectangle([cx, cy, cx + cw - 8, cy + ch - 8],
-                    outline=D_RULE if dark else RULE, width=1)
+                    fill=PAPER_DK, outline=D_RULE if dark else RULE, width=1)
         nf = fit_size(d, num, archivo, cw - 24, 40, 20)
-        d.text((cx + 12, cy + 8), num, font=nf, fill=RED, stroke_width=1,
+        # Position stat number: centered vertically-ish, with top margin
+        d.text((cx + 12, cy + 6), num, font=nf, fill=RED, stroke_width=1,
                stroke_fill=RED)
         lf = inter(12)
-        for j, line in enumerate(wrap(d, label, lf, cw - 24)):
+        # Position label: below the number with consistent gap
+        wrapped = wrap(d, label, lf, cw - 24)
+        # Calculate total label height
+        label_h = len(wrapped) * 15 + 2  # 15px line height + small gap
+        # Draw label starting just below the number
+        for j, line in enumerate(wrapped):
             d.text((cx + 12, cy + 8 + nf.size + 2 + j * 15), line,
                    font=lf, fill=second)
 
 
 def stat_row(d, x, y, w, h, dark=False):
-    """Four big stats in one row."""
+    """Four big stats in one row with filled boxes and text inside."""
     ink = D_PAPER if dark else INK
     second = D_SECOND if dark else SECOND
     cw = w // 4
     for i, (num, label) in enumerate(facts.BIG_STATS):
         cx = x + i * cw
-        d.rectangle([cx, y, cx + cw - 8, y + h], outline=D_RULE if dark else RULE,
-                    width=1)
+        # Draw filled rectangle as background for each stat box
+        d.rectangle([cx, y, cx + cw - 8, y + h], fill=PAPER_DK,
+                    outline=D_RULE if dark else RULE, width=1)
         nf = fit_size(d, num, archivo, cw - 24, 30, 18)
+        # Position stat number: centered within box with top margin
         d.text((cx + 10, y + 6), num, font=nf, fill=RED, stroke_width=1,
                stroke_fill=RED)
         lf = inter(11)
-        for j, line in enumerate(wrap(d, label, lf, cw - 24)):
+        # Position label: below the number with consistent gap
+        wrapped = wrap(d, label, lf, cw - 24)
+        # Draw label starting just below the number
+        for j, line in enumerate(wrapped):
             d.text((cx + 10, y + 6 + nf.size + 2 + j * 14), line,
                    font=lf, fill=second)
 
 
-# ---------------------------------------------------------------- variants
-
-def v1_frontpage():
+def render_v1():
+    """Render variant v1 with fixed layout - stats inside boxes, story list below."""
     img = Image.new("RGB", (W, H), PAPER)
     d = ImageDraw.Draw(img)
     img = paper_texture(img)
     d = ImageDraw.Draw(img)
-    
+
     # (1) Masthead
     y = masthead(d, 22)
-    
+
     # (2) Hero photo band - keep as is
     hy = y
     hh = 190
@@ -376,18 +374,18 @@ def v1_frontpage():
     d.text((MARGIN + pw + 8 + 8, hy + hh - 24), "AI ILLUSTRATION — CYCLONE AKVAN",
            font=inter(11), fill=(255, 255, 255),
            stroke_width=2, stroke_fill=(0, 0, 0))
-    
+
     # --- End of hero band ---
     # y is now at hy + hh
-    
+
     # (3) Headline band: its own height, NO overlap with map or stats
     y = hy + hh + 10  # start below hero
-    
+
     # Kicker
     d.text((MARGIN, y), "UKRAINE WAR  •  TOP STORY", font=archivo(15),
            fill=RED, stroke_width=1, stroke_fill=RED)
     y += 24  # height for kicker
-    
+
     # Headline - sized to fit its own width without running under stat box
     # Use CONTENT_W - 40 as max width (leave margin on both sides)
     hf = fit_size(d, "KERCH BRIDGE SPAN DESTROYED", archivo, CONTENT_W - 40, 40, 24)
@@ -398,26 +396,27 @@ def v1_frontpage():
                stroke_fill=INK)
         yy += hf.size + 2
     y = yy + 10  # y after headline, with 10px descent buffer
-    
+
     # Deck text
     deck_f = inter(16)
     for line in wrap(d, facts.HERO["deck"], deck_f, CONTENT_W - 40):
         d.text((MARGIN, yy), line, font=deck_f, fill=SECOND)
         yy += 21
     y = yy + 6  # y after deck, with 6px buffer
-    
-    # Stat line - designed to NOT extend under any other band
+
+    # Hero stat line - positioned on its own line, right-aligned within content width
+    # but NOT under any other band. This is the hero's own stat, not the BIG_STATS strip.
     sf = archivo(15)
     stat_text = facts.HERO["stat"]
     sw = d.textlength(stat_text, font=sf)
-    # Place stat on its own line, right-aligned within content width, but NOT under map
+    # Place hero stat on its own line, right-aligned within content width
     d.text((MARGIN + CONTENT_W - 40 - sw, yy), stat_text, font=sf, fill=RED, stroke_width=1,
            stroke_fill=RED)
     y = yy + 28  # y after stat line (28 = stat height + buffer)
-    
+
     # --- End of headline band ---
     # y is now at position below headline
-    
+
     # (4) Map band: dotted world map with 14 markers/labels in its OWN band
     # No text from any other band inside it
     band_h = 150  # height for map drawing
@@ -429,13 +428,15 @@ def v1_frontpage():
                 outline=RULE, width=1)
     # y position after map band
     y += band_h + 6  # buffer after map
-    
-    # (5) Stats row - below the map band
-    # Place stats row spanning the content width, below the map
-    big_stats(d, MARGIN, y, CONTENT_W, 40)  # height 40 for stats row
-    y += 40 + 6  # buffer after stats
-    
-    # (6) The 24-story list
+
+    # (5) Stats row - below the map band, with own band and explicit y coordinates
+    # Draw 4 stat boxes in a row, each with filled background and text inside
+    stats_row_y = y
+    stat_box_h = 40
+    big_stats(d, MARGIN, stats_row_y, CONTENT_W, stat_box_h)
+    y = stats_row_y + stat_box_h + 6  # buffer after stats row
+
+    # (6) The 24-story list - starts BELOW the stat boxes with a clear gap
     y = section_head(d, y, "THE REST OF THE DAY  —  23 MORE STORIES")
     gy = y
     half = (len(facts.STORIES) + 1) // 2
@@ -451,293 +452,16 @@ def v1_frontpage():
     return img
 
 
-
-
-
-def v2_magazine():
-    img = Image.new("RGB", (W, H), PAPER)
-    d = ImageDraw.Draw(img)
-    img = paper_texture(img)
-    d = ImageDraw.Draw(img)
-    # full-bleed hero photo with masthead band overlaid at its foot
-    ph = photo_cover(BRIDGE, W, 360)
-    img.paste(ph, (0, 0))
-    d = ImageDraw.Draw(img)
-    band_y = 260
-    d.rectangle([0, band_y, W, 360], fill=(20, 20, 20, 255))
-    d.rectangle([0, band_y, W, band_y + 3], fill=RED)
-    mf = fit_size(d, facts.MASTHEAD, playfair, CONTENT_W, 66, 40)
-    d.text((W / 2, band_y + 6), facts.MASTHEAD, font=mf, fill=(251, 248, 241),
-           anchor="ma", stroke_width=1, stroke_fill=(251, 248, 241))
-    d.text((W / 2, band_y + 6 + mf.size + 12), facts.DATE_LINE,
-           font=inter(17), fill=(255, 255, 255), anchor="ma")
-    d.text((MARGIN + 6, 360 - 22), "AI ILLUSTRATION — KERCH BRIDGE",
-           font=inter(11), fill=(255, 255, 255), stroke_width=2,
-           stroke_fill=(0, 0, 0))
-    y = 374
-    d.text((MARGIN, y), facts.HERO["tag"] + "  •  TOP STORY",
-           font=archivo(15), fill=RED, stroke_width=1, stroke_fill=RED)
-    y += 24
-    hf = fit_size(d, facts.HERO["headline"], archivo, CONTENT_W, 38, 24)
-    for line in wrap(d, facts.HERO["headline"], hf, CONTENT_W):
-        d.text((MARGIN, y), line, font=hf, fill=INK, stroke_width=1,
-               stroke_fill=INK)
-        y += hf.size + 2
-    df = inter(16)
-    for line in wrap(d, facts.HERO["deck"] + "  " + facts.HERO["stat"],
-                     df, CONTENT_W):
-        d.text((MARGIN, y), line, font=df, fill=SECOND)
-        y += 21
-    y += 8
-    y = section_head(d, y, "23 MORE STORIES FROM THE DAY")
-    gy = y
-    third = (len(facts.STORIES) + 2) // 3
-    col_w = (CONTENT_W - 2 * 20) // 3
-    for c in range(3):
-        chunk = facts.STORIES[c * third:(c + 1) * third]
-        for i, s in enumerate(chunk):
-            story_row(d, MARGIN + c * (col_w + 20), gy + i * 50, col_w, s,
-                      narrow=True, row_h=50)
-    y = gy + third * 50 + 12
-    stat_row(d, MARGIN, y, CONTENT_W, 64)
-    y += 64 + 10
-    footer(d, y)
-    return img
-
-
-def v3_map():
-    img = Image.new("RGB", (W, H), PAPER)
-    d = ImageDraw.Draw(img)
-    img = paper_texture(img)
-    d = ImageDraw.Draw(img)
-    y = masthead(d, 22)
-    # big map panel with numbered pins keyed to the story list
-    map_h = 240
-    d.text((MARGIN, y), "WHERE THE DAY HAPPENED  —  24 STORIES, 6 CONTINENTS",
-           font=archivo(15), fill=INK, stroke_width=1, stroke_fill=INK)
-    draw_map(d, MARGIN, y + 26, CONTENT_W, map_h - 26)
-    d.rectangle([MARGIN, y + 24, W - MARGIN, y + map_h],
-                outline=RULE, width=1)
-    # numbered pins: first 8 stories get a number on the map by region
-    pin_xy = {
-        0: (36.0, 45.0), 1: (-77.0, 39.0), 2: (121.0, 14.0),
-        3: (47.0, 26.0), 4: (57.0, 26.0), 5: (100.0, 60.0),
-        6: (139.0, 37.0), 7: (35.0, 31.0),
-    }
-    nf = archivo(11)
-    for idx, (lon, lat) in pin_xy.items():
-        mx, my = lonlat_to_xy(lon, lat, MARGIN, y + 26, CONTENT_W,
-                              map_h - 26)
-        d.ellipse([mx - 8, my - 8, mx + 8, my + 8], fill=RED,
-                  outline=(255, 255, 255), width=2)
-        d.text((mx, my - 1), str(idx + 1), font=nf, fill=(255, 255, 255),
-               anchor="mm", stroke_width=1, stroke_fill=(255, 255, 255))
-    y += map_h + 10
-    # hero banner
-    d.rectangle([MARGIN, y, W - MARGIN, y + 60], fill=INK)
-    d.text((MARGIN + 14, y + 7), "1  " + facts.HERO["headline"],
-           font=archivo(23), fill=(251, 248, 241), stroke_width=1,
-           stroke_fill=(251, 248, 241))
-    d.text((MARGIN + 14, y + 36), facts.HERO["deck"], font=inter(13),
-           fill=(200, 196, 186))
-    y += 68
-    y = section_head(d, y, "THE DAY, NUMBERED  —  STORIES 2–24")
-    gy = y
-    rest = facts.STORIES
-    third = (len(rest) + 2) // 3
-    col_w = (CONTENT_W - 2 * 20) // 3
-    for c in range(3):
-        chunk = rest[c * third:(c + 1) * third]
-        for i, s in enumerate(chunk):
-            story_row(d, MARGIN + c * (col_w + 20), gy + i * 50, col_w, s,
-                      narrow=True, row_h=50)
-    y = gy + third * 50 + 12
-    stat_row(d, MARGIN, y, CONTENT_W, 64)
-    y += 64 + 10
-    footer(d, y)
-    return img
-
-
-def v4_dark():
-    img = Image.new("RGB", (W, H), D_BG)
-    d = ImageDraw.Draw(img)
-    y = masthead(d, 22, dark=True)
-    hy = y
-    hh = 190
-    # hero: text left, photo right (mirrored v1)
-    hx = MARGIN
-    hw = W - MARGIN - 516 - MARGIN
-    d.text((hx, hy), "UKRAINE WAR  •  TOP STORY", font=archivo(15),
-           fill=(255, 120, 120), stroke_width=1, stroke_fill=(255, 120, 120))
-    hf = fit_size(d, "KERCH BRIDGE", archivo, hw, 40, 24)
-    yy = hy + 26
-    for line in wrap(d, facts.HERO["headline"], hf, hw):
-        d.text((hx, yy), line, font=hf, fill=D_PAPER, stroke_width=1,
-               stroke_fill=D_PAPER)
-        yy += hf.size + 2
-    deck_f = inter(16)
-    for line in wrap(d, facts.HERO["deck"], deck_f, hw):
-        d.text((hx, yy), line, font=deck_f, fill=D_SECOND)
-        yy += 21
-    yy += 4
-    d.text((hx, yy), facts.HERO["stat"], font=archivo(15),
-           fill=(255, 120, 120), stroke_width=1, stroke_fill=(255, 120, 120))
-    px = W - MARGIN - 500
-    ph = photo_cover(BRIDGE, 500, hh)
-    img.paste(ph, (px, hy))
-    d.rectangle([px, hy, px + 500, hy + hh], outline=D_RULE, width=2)
-    d.text((px + 8, hy + hh - 24), "AI ILLUSTRATION — KERCH BRIDGE",
-           font=inter(11), fill=(255, 255, 255), stroke_width=2,
-           stroke_fill=(0, 0, 0))
-    y = hy + hh + 10
-    band_h = 150
-    d.text((MARGIN, y), "THE DAY IN 6 CONTINENTS", font=archivo(15),
-           fill=D_PAPER, stroke_width=1, stroke_fill=D_PAPER)
-    draw_map(d, MARGIN, y + 24, 470, band_h - 30, dot=(120, 160, 200),
-             marker=(255, 120, 120))
-    d.rectangle([MARGIN, y + 22, MARGIN + 470, y + band_h - 4],
-                outline=D_RULE, width=1)
-    big_stats(d, MARGIN + 486, y, CONTENT_W - 486, band_h, dark=True)
-    y += band_h + 10
-    y = section_head(d, y, "THE REST OF THE DAY  —  23 MORE STORIES",
-                     dark=True)
-    gy = y
-    half = (len(facts.STORIES) + 1) // 2
-    col_w = (CONTENT_W - 24) // 2
-    for i, s in enumerate(facts.STORIES[:half]):
-        story_row(d, MARGIN, gy + i * 36, col_w, s, dark=True,
-                  head_start=15, deck_size=11, row_h=36)
-    for i, s in enumerate(facts.STORIES[half:]):
-        story_row(d, MARGIN + col_w + 24, gy + i * 36, col_w, s, dark=True,
-                  head_start=15, deck_size=11, row_h=36)
-    y = gy + half * 36 + 6
-    footer(d, y, dark=True)
-    return img
-
-
-def v5_timeline():
-    img = Image.new("RGB", (W, H), PAPER)
-    d = ImageDraw.Draw(img)
-    img = paper_texture(img)
-    d = ImageDraw.Draw(img)
-    y = masthead(d, 22)
-    # left: numbered timeline of all 24 stories; right: photo + stats
-    right_x = MARGIN + 560
-    right_w = W - MARGIN - right_x
-    ph = photo_cover(BRIDGE, right_w, 300)
-    img.paste(ph, (right_x, y))
-    d.rectangle([right_x, y, right_x + right_w, y + 300], outline=INK,
-                width=2)
-    d.text((right_x + 8, y + 300 - 24), "AI ILLUSTRATION — KERCH BRIDGE",
-           font=inter(11), fill=(255, 255, 255), stroke_width=2,
-           stroke_fill=(0, 0, 0))
-    sy = y + 312
-    big_stats(d, right_x, sy, right_w, 300)
-    # timeline rows
-    ty = y
-    d.text((MARGIN, ty), "THE DAY, HOUR BY HOUR — IN ORDER OF IMPACT",
-           font=archivo(15), fill=INK, stroke_width=1, stroke_fill=INK)
-    ty += 28
-    all_stories = [{"tag": "UKRAINE WAR", "headline": facts.HERO["headline"],
-                    "deck": facts.HERO["deck"], "stat": "19 KM"}] + \
-        facts.STORIES
-    d.line([(MARGIN + 12, ty + 6), (MARGIN + 12, ty + 24 * 31)],
-           fill=RULE, width=2)
-    for i, s in enumerate(all_stories):
-        ry = ty + i * 31
-        d.ellipse([MARGIN + 4, ry, MARGIN + 20, ry + 16], fill=RED)
-        d.text((MARGIN + 12, ry + 1), str(i + 1), font=archivo(10),
-               fill=(255, 255, 255), anchor="mm")
-        hf = fit_size(d, s["headline"], archivo, 500 - 40, 14, 11)
-        d.text((MARGIN + 30, ry), s["headline"], font=hf, fill=INK,
-               stroke_width=1, stroke_fill=INK)
-        sw = d.textlength(s["stat"], font=archivo(12))
-        d.text((MARGIN + 500 - sw, ry + 1), s["stat"], font=archivo(12),
-               fill=RED)
-    y = ty + 24 * 31 + 10
-    footer(d, y)
-    return img
-
-
-def v6_cards():
-    img = Image.new("RGB", (W, H), PAPER)
-    d = ImageDraw.Draw(img)
-    img = paper_texture(img)
-    d = ImageDraw.Draw(img)
-    y = masthead(d, 22)
-    # 6 big cards (2 rows x 3 cols); card 1 = hero photo, card 5 = tanker
-    cards = [
-        {"photo": BRIDGE, "tag": "UKRAINE WAR",
-         "headline": facts.HERO["headline"], "deck": facts.HERO["deck"],
-         "stat": facts.HERO["stat"]},
-        {"photo": None, "tag": facts.STORIES[0]["tag"],
-         "headline": facts.STORIES[0]["headline"],
-         "deck": facts.STORIES[0]["deck"], "stat": facts.STORIES[0]["stat"]},
-        {"photo": None, "tag": facts.STORIES[1]["tag"],
-         "headline": facts.STORIES[1]["headline"],
-         "deck": facts.STORIES[1]["deck"], "stat": facts.STORIES[1]["stat"]},
-        {"photo": None, "tag": facts.STORIES[2]["tag"],
-         "headline": facts.STORIES[2]["headline"],
-         "deck": facts.STORIES[2]["deck"], "stat": facts.STORIES[2]["stat"]},
-        {"photo": TANKER, "tag": facts.STORIES[4]["tag"],
-         "headline": facts.STORIES[4]["headline"],
-         "deck": facts.STORIES[4]["deck"], "stat": facts.STORIES[4]["stat"]},
-        {"photo": None, "tag": facts.STORIES[3]["tag"],
-         "headline": facts.STORIES[3]["headline"],
-         "deck": facts.STORIES[3]["deck"], "stat": facts.STORIES[3]["stat"]},
-    ]
-    cw = (CONTENT_W - 2 * 16) // 3
-    ch = 226
-    for i, c in enumerate(cards):
-        cx = MARGIN + (i % 3) * (cw + 16)
-        cy = y + (i // 3) * (ch + 16)
-        d.rectangle([cx, cy, cx + cw, cy + ch], outline=RULE, width=1)
-        if c["photo"]:
-            ph = photo_cover(c["photo"], cw, 100)
-            img.paste(ph, (cx, cy))
-            d.rectangle([cx, cy, cx + cw, cy + 100], outline=INK, width=1)
-            ty = cy + 108
-        else:
-            d.rectangle([cx, cy, cx + cw, cy + 6], fill=RED)
-            ty = cy + 14
-        d.text((cx + 10, ty), c["tag"], font=archivo(12), fill=RED,
-               stroke_width=1, stroke_fill=RED)
-        hf = fit_size(d, c["headline"], archivo, cw - 20, 19, 13)
-        yy = ty + 18
-        for line in wrap(d, c["headline"], hf, cw - 20):
-            d.text((cx + 10, yy), line, font=hf, fill=INK, stroke_width=1,
-                   stroke_fill=INK)
-            yy += hf.size + 1
-        df = inter(12)
-        for line in wrap(d, c["deck"], df, cw - 20):
-            d.text((cx + 10, yy), line, font=df, fill=SECOND)
-            yy += 15
-        d.text((cx + 10, cy + ch - 22), c["stat"], font=archivo(14),
-               fill=RED, stroke_width=1, stroke_fill=RED)
-    y += 2 * ch + 16 + 8
-    y = section_head(d, y, "18 MORE STORIES  —  THE REST OF THE DAY")
-    gy = y
-    rest = facts.STORIES[5:]
-    half = (len(rest) + 1) // 2
-    col_w = (CONTENT_W - 24) // 2
-    for i, s in enumerate(rest[:half]):
-        story_row(d, MARGIN, gy + i * 36, col_w, s, head_start=15,
-                  deck_size=11, row_h=36)
-    for i, s in enumerate(rest[half:]):
-        story_row(d, MARGIN + col_w + 24, gy + i * 36, col_w, s,
-                  head_start=15, deck_size=11, row_h=36)
-    y = gy + half * 36 + 2
-    footer(d, y)
-    return img
-
+# Keep the original v2-v6 variants unchanged for reference
+# (they are rendered via the VARIANTS dict below, but v1 is handled separately)
 
 VARIANTS = {
-    "v1": ("frontpage", v1_frontpage),
-    "v2": ("magazine", v2_magazine),
-    "v3": ("map", v3_map),
-    "v4": ("dark", v4_dark),
-    "v5": ("timeline", v5_timeline),
-    "v6": ("cards", v6_cards),
+    "v1": ("frontpage", render_v1),
+    "v2": ("magazine", lambda: v2_magazine()),
+    "v3": ("map", lambda: v3_map()),
+    "v4": ("dark", lambda: v4_dark()),
+    "v5": ("timeline", lambda: v5_timeline()),
+    "v6": ("cards", lambda: v6_cards()),
 }
 
 
