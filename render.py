@@ -46,8 +46,8 @@ D_SECOND = (176, 188, 202)
 
 HERE = Path(__file__).resolve().parent
 FONTS = HERE / "fonts"
-BRIDGE = HERE / "assets" / "media-generation-hero-bridge-0-91b22b9f-23e9-474d-9300-cd0bf7276343.jpg"
-TANKER = HERE / "assets" / "media-generation-hero-tanker-0-d42e7341-4bc3-447d-af70-fa67106b0509.jpg"
+BRIDGE = HERE / "assets" / "earth-night.jpg"
+TANKER = HERE / "assets" / "cyclone.jpg"
 
 _font_cache = {}
 
@@ -112,6 +112,17 @@ MARKERS = [
     (57.0, 26.0, "HORMUZ", 8, 8),
     (121.0, 14.0, "MANILA", 8, 8),
     (-77.0, 39.0, "WASHINGTON", -78, -14),
+    # Additional markers for 14 total (from NEWS-SOURCES.md)
+    (35.2, 31.8, "JERUSALEM", -5, 5),
+    (72.9, 19.1, "MUMBAI", 5, -5),
+    (-0.1, 51.5, "LONDON", -8, -8),
+    (77.2, 28.6, "NEW DELHI", -5, 5),
+    (90.4, 23.8, "DHAKA", 5, 5),
+    (80.3, 13.1, "CHENNAI", 5, -5),
+    (114.1, 22.5, "SHENZHEN", -5, 5),
+    (85.7, 12.2, "Bay of Bengal", 5, 5),
+    (30.5, 50.4, "KYIV", -8, -8),
+    (-3.7, 40.4, "MADRID", -5, 5),
 ]
 
 
