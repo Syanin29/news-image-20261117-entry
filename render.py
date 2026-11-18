@@ -111,16 +111,16 @@ MARKERS = [
     (36.0, 45.0, "KERCH", 8, -14),
     (57.0, 26.0, "HORMUZ", 8, 8),
     (121.0, 14.0, "MANILA", 8, 8),
-    (-77.0, 39.0, "WASHINGTON", -78, -14),
+    (-77.0, 39.0, "WASHINGTON", -15, -14),
     # Additional markers for 14 total (from NEWS-SOURCES.md)
     (35.2, 31.8, "JERUSALEM", -5, 5),
-    (72.9, 19.1, "MUMBAI", 5, -5),
+    (72.9, 19.1, "MUMBAI", 5, -15),
     (-0.1, 51.5, "LONDON", -8, -8),
     (77.2, 28.6, "NEW DELHI", -5, 5),
     (90.4, 23.8, "DHAKA", 5, 5),
-    (80.3, 13.1, "CHENNAI", 5, -5),
+    (80.3, 13.1, "CHENNAI", 5, 5),
     (114.1, 22.5, "SHENZHEN", -5, 5),
-    (85.7, 12.2, "Bay of Bengal", 5, 5),
+    (85.7, 12.2, "Bay of Bengal", 5, 15),
     (30.5, 50.4, "KYIV", -8, -8),
     (-3.7, 40.4, "MADRID", -5, 5),
 ]
@@ -355,33 +355,42 @@ def v1_frontpage():
     img = paper_texture(img)
     d = ImageDraw.Draw(img)
     y = masthead(d, 22)
-    # hero: photo left, text right
+    # hero: two photos side by side with captions
     hy = y
     hh = 190
-    ph = photo_cover(BRIDGE, 500, hh)
+    pw = (CONTENT_W - 8) // 2
+    # Left photo: Earth (BRIDGE/earth-night.jpg)
+    ph = photo_cover(BRIDGE, pw, hh)
     img.paste(ph, (MARGIN, hy))
-    d.rectangle([MARGIN, hy, MARGIN + 500, hy + hh], outline=INK, width=2)
+    d.rectangle([MARGIN, hy, MARGIN + pw, hy + hh], outline=INK, width=2)
     d.text((MARGIN + 8, hy + hh - 24), "AI ILLUSTRATION — KERCH BRIDGE",
            font=inter(11), fill=(255, 255, 255),
            stroke_width=2, stroke_fill=(0, 0, 0))
-    hx = MARGIN + 516
-    hw = W - MARGIN - hx
-    d.text((hx, hy), "UKRAINE WAR  •  TOP STORY", font=archivo(15),
+    # Right photo: TANKER (cyclone.jpg)
+    ph = photo_cover(TANKER, pw, hh)
+    img.paste(ph, (MARGIN + pw + 8, hy))
+    d.rectangle([MARGIN + pw + 8, hy, MARGIN + pw + 8 + pw, hy + hh], outline=INK, width=2)
+    d.text((MARGIN + pw + 8 + 8, hy + hh - 24), "AI ILLUSTRATION — CYCLONE AKVAN",
+           font=inter(11), fill=(255, 255, 255),
+           stroke_width=2, stroke_fill=(0, 0, 0))
+    # Headline block below the hero photos
+    y = hy + hh + 10
+    d.text((MARGIN, y), "UKRAINE WAR  •  TOP STORY", font=archivo(15),
            fill=RED, stroke_width=1, stroke_fill=RED)
-    hf = fit_size(d, "KERCH BRIDGE", archivo, hw, 40, 24)
-    lines = wrap(d, facts.HERO["headline"], hf, hw)
-    yy = hy + 26
+    hf = fit_size(d, "KERCH BRIDGE SPAN DESTROYED", archivo, CONTENT_W - 20, 40, 24)
+    lines = wrap(d, "KERCH BRIDGE SPAN DESTROYED", hf, CONTENT_W - 20)
+    yy = y + 26
     for line in lines:
-        d.text((hx, yy), line, font=hf, fill=INK, stroke_width=1,
+        d.text((MARGIN, yy), line, font=hf, fill=INK, stroke_width=1,
                stroke_fill=INK)
         yy += hf.size + 2
     deck_f = inter(16)
-    for line in wrap(d, facts.HERO["deck"], deck_f, hw):
-        d.text((hx, yy), line, font=deck_f, fill=SECOND)
+    for line in wrap(d, facts.HERO["deck"], deck_f, CONTENT_W - 20):
+        d.text((MARGIN, yy), line, font=deck_f, fill=SECOND)
         yy += 21
     yy += 4
     sf = archivo(15)
-    d.text((hx, yy), facts.HERO["stat"], font=sf, fill=RED, stroke_width=1,
+    d.text((MARGIN, yy), facts.HERO["stat"], font=sf, fill=RED, stroke_width=1,
            stroke_fill=RED)
     y = hy + hh + 10
     # middle band: map left, big stats right
